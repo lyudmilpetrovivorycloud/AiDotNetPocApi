@@ -1,0 +1,40 @@
+@baseUrl = https://localhost:60711
+
+### Analyze — single sentence
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": ["Microsoft was founded by Bill Gates in Seattle"]
+}
+
+### Analyze — two sentences
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Microsoft was founded by Bill Gates in Seattle",
+    "Elon Musk announced Tesla would open a factory in Berlin"
+  ]
+}
+
+### Analyze — only named entities expected
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Barack Obama served as the 44th President of the United States",
+    "Google acquired YouTube for over a billion dollars",
+    "Paris and London are popular European destinations"
+  ]
+}
+
+### Validation — empty sentence list (expects 400)
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": []
+}

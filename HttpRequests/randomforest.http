@@ -1,0 +1,60 @@
+@baseUrl = https://localhost:60711
+
+# Features: sqft, bedrooms, bathrooms, garageSpaces, ageYears
+
+### Predict — four houses with known prices (error % reported)
+POST {{baseUrl}}/api/RandomForest/Predict
+Content-Type: application/json
+
+{
+  "houses": [
+    { "features": [1800, 3, 2, 2,  5], "actualPrice": 261400 },
+    { "features": [2500, 5, 3, 2,  3], "actualPrice": 374200 },
+    { "features": [900,  1, 1, 0, 45], "actualPrice": 85000  },
+    { "features": [3200, 6, 4, 3,  1], "actualPrice": 476000 }
+  ]
+}
+
+### Predict — starter homes
+POST {{baseUrl}}/api/RandomForest/Predict
+Content-Type: application/json
+
+{
+  "houses": [
+    { "features": [850,  2, 1, 0, 40], "actualPrice": 92000  },
+    { "features": [1100, 2, 1, 1, 20], "actualPrice": 148000 },
+    { "features": [1350, 3, 1, 1, 18], "actualPrice": 185000 }
+  ]
+}
+
+### Predict — luxury segment
+POST {{baseUrl}}/api/RandomForest/Predict
+Content-Type: application/json
+
+{
+  "houses": [
+    { "features": [4000, 6, 5, 4, 2], "actualPrice": 620000 },
+    { "features": [5500, 7, 6, 4, 1], "actualPrice": 890000 }
+  ]
+}
+
+### Predict — unlabeled (no actualPrice, no error computed)
+POST {{baseUrl}}/api/RandomForest/Predict
+Content-Type: application/json
+
+{
+  "houses": [
+    { "features": [2200, 4, 3, 2, 8]  },
+    { "features": [1600, 3, 2, 1, 12] }
+  ]
+}
+
+### Validation — wrong feature count (expects 400)
+POST {{baseUrl}}/api/RandomForest/Predict
+Content-Type: application/json
+
+{
+  "houses": [
+    { "features": [1800, 3], "actualPrice": 261400 }
+  ]
+}

@@ -1,0 +1,59 @@
+@baseUrl = https://localhost:60711
+
+# Features: wordCount, capsRatio, exclamations, urlCount, moneyKeywords, urgencyKeywords, linkRatio, avgWordLen
+
+### Predict — two clear spam samples with ground-truth labels
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [22,  0.62, 7, 5, 4, 3, 0.45, 3.2], "label": 1 },
+    { "features": [35,  0.60, 5, 3, 3, 2, 0.35, 3.8], "label": 1 }
+  ]
+}
+
+### Predict — two clear legit samples with ground-truth labels
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [210, 0.03, 0, 0, 0, 0, 0.01, 6.8], "label": 0 },
+    { "features": [145, 0.07, 1, 1, 0, 0, 0.03, 5.9], "label": 0 }
+  ]
+}
+
+### Predict — mixed set with accuracy check
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [22,  0.62, 7, 5, 4, 3, 0.45, 3.2], "label": 1 },
+    { "features": [35,  0.60, 5, 3, 3, 2, 0.35, 3.8], "label": 1 },
+    { "features": [210, 0.03, 0, 0, 0, 0, 0.01, 6.8], "label": 0 },
+    { "features": [145, 0.07, 1, 1, 0, 0, 0.03, 5.9], "label": 0 }
+  ]
+}
+
+### Predict — unlabeled inference (no ground-truth, no accuracy field)
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [18,  0.70, 9, 6, 5, 4, 0.50, 3.0] },
+    { "features": [300, 0.02, 0, 0, 0, 0, 0.00, 7.1] }
+  ]
+}
+
+### Validation — wrong feature count (expects 400)
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [22, 0.62, 7], "label": 1 }
+  ]
+}
