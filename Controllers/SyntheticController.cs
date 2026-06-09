@@ -1,3 +1,5 @@
+using AiDotNet;
+using AiDotNet.Data.Loaders;
 using AiDotNet.Models.Options;
 using AiDotNet.NeuralNetworks;
 using AiDotNet.NeuralNetworks.SyntheticData;
@@ -31,10 +33,11 @@ public sealed class SyntheticController : ControllerBase
     private static readonly Matrix<double> SeedData = BuildSeedData();
 
     /// <summary>
-    /// POC: Synthetic tabular data generation using CTGANGenerator via ISyntheticTabularGenerator.
-    /// Demonstrates FitAsync + Generate on the AiDotNet synthetic data API.
-    /// Note: CTGANGenerator implements ISyntheticTabularGenerator&lt;T&gt; (not IFullModel), so it
-    /// uses its own fit/generate pipeline rather than AiModelBuilder.
+    /// POC: Synthetic tabular data generation using CTGANGenerator via AiDotNet facade.
+    /// CTGANGenerator extends NeuralNetworkBase&lt;T&gt; which implements
+    /// IFullModel&lt;T, Tensor&lt;T&gt;, Tensor&lt;T&gt;&gt;, so it integrates with
+    /// AiModelBuilder&lt;double, Tensor&lt;double&gt;, Tensor&lt;double&gt;&gt; directly.
+    /// Demonstrates DataLoaders.FromTensors → AiModelBuilder.ConfigureModel → BuildAsync → Predict.
     /// </summary>
     [HttpPost("Generate")]
     public async Task<ActionResult<SyntheticPocResponse>> Generate(
@@ -42,15 +45,20 @@ public sealed class SyntheticController : ControllerBase
         CancellationToken cancellationToken)
     {
         int numSamples = Math.Clamp(request.NumSamples ?? 20, 1, 200);
-        int epochs = Math.Clamp(request.TrainingEpochs ?? 30, 1, 200);
 
         var totalTimer = Stopwatch.StartNew();
+        var trainTimer = Stopwatch.StartNew();
 
         // ─────────────────────────────────────────────────────────────────
-        // 1. Configure CTGANGenerator
-        //    CTGANGenerator implements ISyntheticTabularGenerator<T> directly.
-        //    It does NOT implement IFullModel, so it uses its own API pattern
-        //    rather than AiModelBuilder — documented explicitly in the response.
+        // 1. Convert seed Matrix to Tensor and wrap in data loader
+        //    Shape: [SeedRows, FeatureCount] — unsupervised, input == target
+        // ─────────────────────────────────────────────────────────────────
+        var seedTensor = MatrixToTensor(SeedData);
+        var dataLoader = DataLoaders.FromTensors(seedTensor, seedTensor);
+
+        // ─────────────────────────────────────────────────────────────────
+        // 2. Configure CTGANGenerator
+        //    CTGANGenerator → NeuralNetworkBase<T> → IFullModel<T, Tensor<T>, Tensor<T>>
         // ─────────────────────────────────────────────────────────────────
         var architecture = new NeuralNetworkArchitecture<double>(
             inputFeatures: FeatureCount,
@@ -66,32 +74,32 @@ public sealed class SyntheticController : ControllerBase
 
         var generator = new CTGANGenerator<double>(architecture, ctganOptions);
 
+        // Full facade path: ConfigureDataLoader + ConfigureModel + BuildAsync
+        var result = await new AiModelBuilder<double, Tensor<double>, Tensor<double>>()
+            .ConfigureDataLoader(dataLoader)
+            .ConfigureModel(generator)
+            .BuildAsync();
+
+        trainTimer.Stop();
+
         // ─────────────────────────────────────────────────────────────────
-        // 2. Fit on seed data (ISyntheticTabularGenerator.FitAsync)
+        // 3. Generate synthetic rows via AiModelResult.Predict
+        //    Noise input shape: [numSamples, EmbeddingDim] — Gaussian noise seed
         // ─────────────────────────────────────────────────────────────────
-        var fitTimer = Stopwatch.StartNew();
+        var inferenceTimer = Stopwatch.StartNew();
 
-        await generator.FitAsync(SeedData, Schema, epochs: epochs, cancellationToken);
+        var noiseTensor = BuildNoiseTensor(numSamples, embeddingDim: 64);
+        var syntheticTensor = result.Predict(noiseTensor);
 
-        fitTimer.Stop();
-
-        // ─────────────────────────────────────────────────────────────────
-        // 3. Generate synthetic rows (ISyntheticTabularGenerator.Generate)
-        // ─────────────────────────────────────────────────────────────────
-        var genTimer = Stopwatch.StartNew();
-
-        Matrix<double> synthetic = generator.Generate(numSamples);
-
-        genTimer.Stop();
+        inferenceTimer.Stop();
         totalTimer.Stop();
 
         // ─────────────────────────────────────────────────────────────────
         // 4. Collect comparison statistics (real vs synthetic)
         // ─────────────────────────────────────────────────────────────────
         var realStats = ComputeStats(SeedData);
-        var syntheticStats = ComputeStats(synthetic);
-
-        var syntheticRows = MatrixToRows(synthetic, numSamples);
+        var syntheticStats = ComputeTensorStats(syntheticTensor, numSamples);
+        var syntheticRows = TensorToRows(syntheticTensor, numSamples);
 
         return Ok(new SyntheticPocResponse(
             SyntheticSamples: syntheticRows,
@@ -103,19 +111,18 @@ public sealed class SyntheticController : ControllerBase
                 GeneratorDimensions: [128, 128],
                 DiscriminatorDimensions: [128, 128],
                 SeedRows: SeedRows,
-                TrainingEpochs: epochs,
                 GeneratedSamples: numSamples,
                 ColumnSchema: Schema.Select(c => new ColumnSchema(
                     c.Name, c.DataType.ToString(), c.Categories?.ToList())).ToList()),
-            FacadePattern: "CTGANGenerator<double>(NeuralNetworkArchitecture, CTGANOptions)" +
-                           " → ISyntheticTabularGenerator<T>.FitAsync(...) → .Generate(numSamples)",
-            ApiNote: "CTGANGenerator implements ISyntheticTabularGenerator<T>, not IFullModel<T,TIn,TOut>. " +
-                     "It uses its own Fit/Generate pipeline rather than AiModelBuilder — " +
-                     "this is the intended AiDotNet pattern for synthetic tabular generators.",
+            FacadePattern: "AiModelBuilder<double, Tensor<double>, Tensor<double>>" +
+                           ".ConfigureDataLoader(DataLoaders.FromTensors(...))" +
+                           ".ConfigureModel(CTGANGenerator<double>)" +
+                           ".BuildAsync() → AiModelResult.Predict(Tensor<double>)",
+            InterfaceChain: "CTGANGenerator → NeuralNetworkBase<T> → IFullModel<T, Tensor<T>, Tensor<T>>",
             Timings: new SyntheticTimings(
                 TotalMs: Math.Round(totalTimer.Elapsed.TotalMilliseconds, 3),
-                FitMs: Math.Round(fitTimer.Elapsed.TotalMilliseconds, 3),
-                GenerateMs: Math.Round(genTimer.Elapsed.TotalMilliseconds, 3)),
+                TrainMs: Math.Round(trainTimer.Elapsed.TotalMilliseconds, 3),
+                InferenceMs: Math.Round(inferenceTimer.Elapsed.TotalMilliseconds, 3)),
             System: BuildSystemInfo()));
     }
 
@@ -149,6 +156,53 @@ public sealed class SyntheticController : ControllerBase
         return new Matrix<double>(rows);
     }
 
+    // ─── Tensor helpers ───────────────────────────────────────────────────
+
+    private static Tensor<double> MatrixToTensor(Matrix<double> matrix)
+    {
+        int rows = matrix.Rows, cols = matrix.Columns;
+        var values = new double[rows * cols];
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < cols; c++)
+                values[r * cols + c] = matrix[r, c];
+        return new Tensor<double>(values, [rows, cols]);
+    }
+
+    // Gaussian noise seed for the generator (Box-Muller transform)
+    private static Tensor<double> BuildNoiseTensor(int numSamples, int embeddingDim)
+    {
+        var rng = new Random(42);
+        var values = new double[numSamples * embeddingDim];
+        for (int i = 0; i < values.Length; i += 2)
+        {
+            double u1 = 1.0 - rng.NextDouble();
+            double u2 = 1.0 - rng.NextDouble();
+            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
+            values[i] = z;
+            if (i + 1 < values.Length)
+                values[i + 1] = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+        }
+        return new Tensor<double>(values, [numSamples, embeddingDim]);
+    }
+
+    private static List<List<double>> TensorToRows(Tensor<double> tensor, int limit)
+    {
+        // Expect shape [numSamples, FeatureCount] or [numSamples, FeatureCount, ...]
+        int actualRows = tensor.Shape[0];
+        int cols = tensor.Shape.Length > 1 ? tensor.Shape[1] : 1;
+        int n = Math.Min(limit, actualRows);
+
+        var rows = new List<List<double>>();
+        for (int r = 0; r < n; r++)
+        {
+            var row = new List<double>();
+            for (int c = 0; c < cols; c++)
+                row.Add(Math.Round(tensor[r, c], 4));
+            rows.Add(row);
+        }
+        return rows;
+    }
+
     // ─── Statistics ───────────────────────────────────────────────────────
 
     private static List<ColumnStats> ComputeStats(Matrix<double> data)
@@ -161,30 +215,37 @@ public sealed class SyntheticController : ControllerBase
             var values = Enumerable.Range(0, rows).Select(r => data[r, col]).ToArray();
             double mean = values.Average();
             double variance = values.Select(v => (v - mean) * (v - mean)).Average();
-            double std = Math.Sqrt(variance);
 
             stats.Add(new ColumnStats(
                 Column: Schema[col].Name,
                 Min: Math.Round(values.Min(), 3),
                 Max: Math.Round(values.Max(), 3),
                 Mean: Math.Round(mean, 3),
-                Std: Math.Round(std, 3)));
+                Std: Math.Round(Math.Sqrt(variance), 3)));
         }
         return stats;
     }
 
-    private static List<List<double>> MatrixToRows(Matrix<double> matrix, int limit)
+    private static List<ColumnStats> ComputeTensorStats(Tensor<double> tensor, int numRows)
     {
-        var rows = new List<List<double>>();
-        int n = Math.Min(limit, matrix.Rows);
-        for (int r = 0; r < n; r++)
+        int rows = Math.Min(numRows, tensor.Shape[0]);
+        int cols = Math.Min(FeatureCount, tensor.Shape.Length > 1 ? tensor.Shape[1] : 1);
+        var stats = new List<ColumnStats>();
+
+        for (int col = 0; col < cols; col++)
         {
-            var row = new List<double>();
-            for (int c = 0; c < matrix.Columns; c++)
-                row.Add(Math.Round(matrix[r, c], 4));
-            rows.Add(row);
+            var values = Enumerable.Range(0, rows).Select(r => tensor[r, col]).ToArray();
+            double mean = values.Average();
+            double variance = values.Select(v => (v - mean) * (v - mean)).Average();
+
+            stats.Add(new ColumnStats(
+                Column: Schema[col].Name,
+                Min: Math.Round(values.Min(), 3),
+                Max: Math.Round(values.Max(), 3),
+                Mean: Math.Round(mean, 3),
+                Std: Math.Round(Math.Sqrt(variance), 3)));
         }
-        return rows;
+        return stats;
     }
 
     // ─── System info ─────────────────────────────────────────────────────
@@ -192,7 +253,7 @@ public sealed class SyntheticController : ControllerBase
     private static PocSystemInfo BuildSystemInfo() => new(
         Os: RuntimeInformation.OSDescription,
         Framework: RuntimeInformation.FrameworkDescription,
-        LibraryVersion: typeof(CTGANGenerator<>).Assembly
+        LibraryVersion: typeof(AiModelBuilder<,,>).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? "unknown");
 }
@@ -200,8 +261,7 @@ public sealed class SyntheticController : ControllerBase
 // ─── Request / Response contracts ────────────────────────────────────────────
 
 public sealed record SyntheticRequest(
-    [property: JsonPropertyName("numSamples")] int? NumSamples,
-    [property: JsonPropertyName("trainingEpochs")] int? TrainingEpochs);
+    [property: JsonPropertyName("numSamples")] int? NumSamples);
 
 public sealed record SyntheticPocResponse(
     [property: JsonPropertyName("syntheticSamples")] List<List<double>> SyntheticSamples,
@@ -209,7 +269,7 @@ public sealed record SyntheticPocResponse(
     [property: JsonPropertyName("syntheticStats")] List<ColumnStats> SyntheticStats,
     [property: JsonPropertyName("modelInfo")] SyntheticModelInfo ModelInfo,
     [property: JsonPropertyName("facadePattern")] string FacadePattern,
-    [property: JsonPropertyName("apiNote")] string ApiNote,
+    [property: JsonPropertyName("interfaceChain")] string InterfaceChain,
     [property: JsonPropertyName("timings")] SyntheticTimings Timings,
     [property: JsonPropertyName("system")] PocSystemInfo System);
 
@@ -226,7 +286,6 @@ public sealed record SyntheticModelInfo(
     [property: JsonPropertyName("generatorDimensions")] int[] GeneratorDimensions,
     [property: JsonPropertyName("discriminatorDimensions")] int[] DiscriminatorDimensions,
     [property: JsonPropertyName("seedRows")] int SeedRows,
-    [property: JsonPropertyName("trainingEpochs")] int TrainingEpochs,
     [property: JsonPropertyName("generatedSamples")] int GeneratedSamples,
     [property: JsonPropertyName("columnSchema")] List<ColumnSchema> ColumnSchema);
 
@@ -237,5 +296,5 @@ public sealed record ColumnSchema(
 
 public sealed record SyntheticTimings(
     [property: JsonPropertyName("totalMs")] double TotalMs,
-    [property: JsonPropertyName("fitMs")] double FitMs,
-    [property: JsonPropertyName("generateMs")] double GenerateMs);
+    [property: JsonPropertyName("trainMs")] double TrainMs,
+    [property: JsonPropertyName("inferenceMs")] double InferenceMs);

@@ -1,30 +1,27 @@
 @baseUrl = https://localhost:60711
 
-### Generate — small batch, fast (5 epochs for quick smoke test)
+### Generate — small batch (5 samples)
 POST {{baseUrl}}/api/Synthetic/Generate
 Content-Type: application/json
 
 {
-  "numSamples": 5,
-  "trainingEpochs": 5
+  "numSamples": 5
 }
 
-### Generate — standard POC run (15 samples, 30 epochs)
+### Generate — standard POC run (15 samples)
 POST {{baseUrl}}/api/Synthetic/Generate
 Content-Type: application/json
 
 {
-  "numSamples": 15,
-  "trainingEpochs": 30
+  "numSamples": 15
 }
 
-### Generate — larger batch for stat comparison (50 samples, 50 epochs)
+### Generate — larger batch for stat comparison (50 samples)
 POST {{baseUrl}}/api/Synthetic/Generate
 Content-Type: application/json
 
 {
-  "numSamples": 50,
-  "trainingEpochs": 50
+  "numSamples": 50
 }
 
 ### Generate — max allowed (200 samples)
@@ -32,6 +29,5 @@ POST {{baseUrl}}/api/Synthetic/Generate
 Content-Type: application/json
 
 {
-  "numSamples": 200,
-  "trainingEpochs": 30
+  "numSamples": 200
 }
