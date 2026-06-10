@@ -1,6 +1,9 @@
+using AiDotNet.ActivationFunctions;
 using AiDotNet.Enums;
+using AiDotNet.Interfaces;
 using AiDotNet.Models.Options;
 using AiDotNet.NeuralNetworks;
+using AiDotNet.NeuralNetworks.Layers;
 using AiDotNet.NeuralNetworks.Tabular;
 using AiDotNet.Tensors.LinearAlgebra;
 using Microsoft.AspNetCore.Mvc;
@@ -29,6 +32,7 @@ public sealed record SpamClassificationResult(
     double TrainMs,
     double InferenceMs,
     double FinalTrainLoss,
+    int EpochsRun,
     long ParameterCount,
     string FacadePattern,
     string InterfaceChain);
@@ -38,8 +42,15 @@ public sealed record SpamClassificationResult(
 // trained exactly once (lazily, on first request, off the request thread) and
 // reused for all subsequent inference.
 //
-// Model: FTTransformerNetwork<double> — Feature Tokenizer Transformer (per-feature
-// linear embeddings → NumLayers × multi-head self-attention → per-token softmax head).
+// Model: FTTransformerNetwork<double> — canonical FT-Transformer (Gorishniy et al.
+// 2021) assembled from the library's own layers via the custom-layers overload of
+// NeuralNetworkArchitecture:
+//
+//   FeatureTokenizer(8 → 64) → PrependCLSToken → NumLayers × TransformerEncoder
+//   → SequenceTokenSlice(First = CLS readout) → Dense(2, softmax)
+//
+// giving a proper per-sample [batch, NumClasses] output trained against plain
+// one-hot targets with the network's default CategoricalCrossEntropyLoss.
 //
 // Why FTTransformerNetwork and not FTTransformerClassifier:
 // In AiDotNet 0.213.3 the standalone tabular classifiers (FTTransformerClassifier,
@@ -48,24 +59,33 @@ public sealed record SpamClassificationResult(
 // against the whole AiDotNet.NeuralNetworks.Tabular.*Classifier family.
 // FTTransformerNetwork extends NeuralNetworkBase<T> and its standard Train(x, y)
 // path (autodiff tape + optimizer) works: on this dataset loss converges
-// 0.73 → <0.001 over 30 epochs with 100% training accuracy.
+// 0.75 → <0.0005 within 30 epochs with 100% training accuracy.
 //
-// One library quirk handled here: the default FT-Transformer layer stack has no
-// final [CLS]/pooling layer, so the network outputs per-feature-token predictions
-// of shape [batch, FeatureCount, NumClasses]. We therefore replicate the one-hot
-// target across the 8 feature tokens during training and mean-pool the per-token
-// softmax probabilities at inference.
+// Why a custom layer stack: the network's DEFAULT stack has no CLS/pooling head —
+// its dense head applies per feature token, so output is [batch, FeatureCount,
+// NumClasses] and targets must be replicated per token. The custom stack above
+// (all stock AiDotNet layers) restores the standard CLS readout.
+//
+// Also verified on 0.213.3: SaveModel/LoadModel does not round-trip this stack
+// (reloaded network predicts garbage), so the model is trained per process rather
+// than persisted; and layer instances must NOT be shared between two network
+// instances (the architecture holds live, shape-bound layer objects).
 
 public sealed class TransformerSpamClassificationFacade : ISpamClassificationFacade
 {
     public const int TrainSamples = 100;
-    public const int TrainEpochs = 30;
+    public const int MaxTrainEpochs = 30;
     public const int EmbeddingDimension = 64;
     public const int NumHeads = 4;
     public const int NumLayers = 2;
 
     private const int FeatureCount = 8;
     private const int NumClasses = 2;
+    private const int Seed = 42;
+
+    // Stop training once mean cross-entropy drops below this (reached well before
+    // MaxTrainEpochs on this dataset) — roughly a third off cold-start latency.
+    private const double TargetLoss = 5e-4;
 
     // Trained once per process; all requests share the result.
     private readonly Lazy<Task<TrainedModel>> _model = new(
@@ -81,6 +101,7 @@ public sealed class TransformerSpamClassificationFacade : ISpamClassificationFac
         double[] FeatureStds,
         double TrainMs,
         double FinalLoss,
+        int EpochsRun,
         long ParameterCount);
 
     public async Task<SpamClassificationResult> PredictAsync(
@@ -115,7 +136,8 @@ public sealed class TransformerSpamClassificationFacade : ISpamClassificationFac
         var predictions = new List<SamplePrediction>(samples.Count);
         for (int i = 0; i < samples.Count; i++)
         {
-            double spamProb = MeanPooledSpamProbability(probs, i);
+            // CLS-head output is [M, NumClasses] with rows summing to 1.
+            double spamProb = probs[i, 1];
             bool isSpam = spamProb >= 0.5;
             var sample = samples[i];
 
@@ -136,30 +158,17 @@ public sealed class TransformerSpamClassificationFacade : ISpamClassificationFac
             TrainMs: model.TrainMs,
             InferenceMs: inferenceTimer.Elapsed.TotalMilliseconds,
             FinalTrainLoss: model.FinalLoss,
+            EpochsRun: model.EpochsRun,
             ParameterCount: model.ParameterCount,
             FacadePattern:
                 "ISpamClassificationFacade → TransformerSpamClassificationFacade (singleton, trained once)" +
-                " | new FTTransformerNetwork<double>(NeuralNetworkArchitecture(OneDimensional, MultiClassClassification, inputSize=8, outputSize=2), FTTransformerOptions<double>)" +
-                $" → SetTrainingMode(true) → Train×{TrainEpochs}(x[100,8], y[100,8,2] one-hot per token)" +
-                " → SetTrainingMode(false) → Predict(Tensor[M,8]) → mean-pool per-token softmax [M,8,2] → P(spam)",
+                " | new FTTransformerNetwork<double>(NeuralNetworkArchitecture(custom layers:" +
+                $" FeatureTokenizer(8→{EmbeddingDimension}) → PrependCLSToken → {NumLayers}× TransformerEncoder({NumHeads} heads, ff {EmbeddingDimension * 4})" +
+                " → SequenceTokenSlice(CLS) → Dense(2, softmax)), FTTransformerOptions<double>)" +
+                $" → SetTrainingMode(true) → Train(x[100,8], y[100,2] one-hot) until loss ≤ {TargetLoss} (max {MaxTrainEpochs} epochs, CategoricalCrossEntropyLoss)" +
+                " → SetTrainingMode(false) → Predict(Tensor[M,8]) → softmax [M,2] → P(spam)",
             InterfaceChain:
                 "FTTransformerNetwork<T> → NeuralNetworkBase<T> → INeuralNetworkModel<T>, IFullModel<T,Tensor<T>,Tensor<T>>");
-    }
-
-    // Network output is [M, FeatureCount, NumClasses] (per-token softmax, rows sum
-    // to 1); average P(class=1) over the feature tokens. Falls back to [M, NumClasses]
-    // in case a future library version adds the pooling head.
-    private static double MeanPooledSpamProbability(Tensor<double> probs, int sampleIndex)
-    {
-        if (probs.Rank == 3)
-        {
-            double sum = 0;
-            int tokens = probs.Shape[1];
-            for (int t = 0; t < tokens; t++)
-                sum += probs[sampleIndex, t, 1];
-            return sum / tokens;
-        }
-        return probs[sampleIndex, 1];
     }
 
     // ─── One-time training ────────────────────────────────────────────────────
@@ -180,34 +189,22 @@ public sealed class TransformerSpamClassificationFacade : ISpamClassificationFac
                 xFlat[r * FeatureCount + c] = (features[r, c] - means[c]) / stds[c];
         var x = new Tensor<double>(xFlat, [TrainSamples, FeatureCount]);
 
-        // One-hot targets replicated across the 8 feature tokens to match the
-        // network's per-token output shape [batch, FeatureCount, NumClasses].
-        var yFlat = new double[TrainSamples * FeatureCount * NumClasses];
+        // Plain per-sample one-hot targets — the CLS head outputs [batch, NumClasses].
+        var yFlat = new double[TrainSamples * NumClasses];
         for (int i = 0; i < TrainSamples; i++)
-            for (int t = 0; t < FeatureCount; t++)
-                yFlat[(i * FeatureCount + t) * NumClasses + labels[i]] = 1.0;
-        var y = new Tensor<double>(yFlat, [TrainSamples, FeatureCount, NumClasses]);
+            yFlat[i * NumClasses + labels[i]] = 1.0;
+        var y = new Tensor<double>(yFlat, [TrainSamples, NumClasses]);
 
-        var architecture = new NeuralNetworkArchitecture<double>(
-            InputType.OneDimensional,
-            NeuralNetworkTaskType.MultiClassClassification,
-            inputSize: FeatureCount,
-            outputSize: NumClasses);
-
-        var options = new FTTransformerOptions<double>
-        {
-            EmbeddingDimension = EmbeddingDimension,
-            NumHeads = NumHeads,
-            NumLayers = NumLayers,
-            DropoutRate = 0.1,
-            NumFeatures = FeatureCount,
-        };
-
-        var network = new FTTransformerNetwork<double>(architecture, options);
+        var network = BuildNetwork();
 
         network.SetTrainingMode(true);
-        for (int epoch = 0; epoch < TrainEpochs; epoch++)
+        int epochsRun = 0;
+        while (epochsRun < MaxTrainEpochs)
+        {
             network.Train(x, y);
+            epochsRun++;
+            if (network.GetLastLoss() <= TargetLoss) break;
+        }
         network.SetTrainingMode(false);
 
         timer.Stop();
@@ -218,7 +215,44 @@ public sealed class TransformerSpamClassificationFacade : ISpamClassificationFac
             FeatureStds: stds,
             TrainMs: timer.Elapsed.TotalMilliseconds,
             FinalLoss: network.GetLastLoss(),
+            EpochsRun: epochsRun,
             ParameterCount: network.GetParameterCount());
+    }
+
+    // Canonical FT-Transformer with CLS readout, assembled from stock AiDotNet
+    // layers. Layer instances are live, shape-bound objects — never reuse this
+    // list (or the architecture wrapping it) for a second network instance.
+    private static FTTransformerNetwork<double> BuildNetwork()
+    {
+        var layers = new List<ILayer<double>>
+        {
+            new FeatureTokenizerLayer<double>(FeatureCount, EmbeddingDimension),
+            new PrependCLSTokenLayer<double>(EmbeddingDimension, seed: Seed),
+        };
+        for (int i = 0; i < NumLayers; i++)
+            layers.Add(new TransformerEncoderLayer<double>(
+                NumHeads, feedForwardDim: EmbeddingDimension * 4, embeddingSize: EmbeddingDimension));
+        layers.Add(new SequenceTokenSliceLayer<double>(SequenceTokenSliceLayer<double>.Position.First));
+        layers.Add(new DenseLayer<double>(
+            NumClasses, (IVectorActivationFunction<double>)new SoftmaxActivation<double>()));
+
+        var architecture = new NeuralNetworkArchitecture<double>(
+            InputType.OneDimensional,
+            NeuralNetworkTaskType.MultiClassClassification,
+            inputSize: FeatureCount,
+            outputSize: NumClasses,
+            layers: layers);
+
+        var options = new FTTransformerOptions<double>
+        {
+            EmbeddingDimension = EmbeddingDimension,
+            NumHeads = NumHeads,
+            NumLayers = NumLayers,
+            NumFeatures = FeatureCount,
+            Seed = Seed,
+        };
+
+        return new FTTransformerNetwork<double>(architecture, options);
     }
 
     private static (double[] Means, double[] Stds) ComputeNormalization(double[,] features)
@@ -299,9 +333,10 @@ public sealed class ClassificationController : ControllerBase
     /// <summary>
     /// POC: Binary spam classification using FTTransformerNetwork (Feature Tokenizer Transformer)
     /// behind ISpamClassificationFacade. The model is trained once per process via the standard
-    /// NeuralNetworkBase.Train path (loss converges to &lt;0.001) and cached; requests pay
-    /// inference cost only. Architecture: per-feature linear embeddings → NumLayers ×
-    /// multi-head self-attention → per-token softmax, mean-pooled over {not-spam, spam}.
+    /// NeuralNetworkBase.Train path (categorical cross-entropy, early-stopped at loss ≤ 5e-4)
+    /// and cached; requests pay inference cost only. Architecture: per-feature linear embeddings
+    /// → prepended CLS token → NumLayers × multi-head self-attention → CLS readout →
+    /// softmax over {not-spam, spam}.
     /// </summary>
     [HttpPost("Predict")]
     public async Task<ActionResult<ClassificationPocResponse>> Predict(
@@ -342,7 +377,7 @@ public sealed class ClassificationController : ControllerBase
                 NumLayers: TransformerSpamClassificationFacade.NumLayers,
                 FeatureCount: FeatureCount,
                 TrainSamples: TransformerSpamClassificationFacade.TrainSamples,
-                TrainEpochs: TransformerSpamClassificationFacade.TrainEpochs,
+                TrainEpochs: result.EpochsRun,
                 ParameterCount: result.ParameterCount,
                 FinalTrainLoss: Math.Round(result.FinalTrainLoss, 6),
                 FeatureNames: ["wordCount", "capsRatio", "exclamations", "urlCount",
