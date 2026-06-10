@@ -1,7 +1,4 @@
-using AiDotNet;
-using AiDotNet.Data.Loaders;
 using AiDotNet.Models.Options;
-using AiDotNet.NeuralNetworks;
 using AiDotNet.NeuralNetworks.SyntheticData;
 using AiDotNet.Tensors.LinearAlgebra;
 using Microsoft.AspNetCore.Mvc;
@@ -12,12 +9,69 @@ using System.Text.Json.Serialization;
 
 namespace AiDotNetPocApi.Controllers;
 
-[ApiController]
-[Route("api/[controller]")]
-public sealed class SyntheticController : ControllerBase
+// ─── Facade interface ─────────────────────────────────────────────────────────
+// Hides all AiDotNet types from the controller; controller depends only on this.
+
+public interface ISyntheticDataFacade
 {
-    // Customer profile schema: Age, Income, Education (categorical), CreditScore
-    private static readonly ColumnMetadata[] Schema =
+    Task<SyntheticGenerationResult> GenerateAsync(int numSamples, CancellationToken ct = default);
+}
+
+// ─── Domain result ────────────────────────────────────────────────────────────
+
+public sealed record SyntheticGenerationResult(
+    List<List<double>> Rows,
+    List<ColumnStats> RealStats,
+    List<ColumnStats> SyntheticStats,
+    List<CorrelationStats> Correlations,
+    double FitMs,
+    double GenerateMs,
+    string FacadePattern,
+    string InterfaceChain);
+
+// ─── Facade implementation ────────────────────────────────────────────────────
+// Owns the AiDotNet generator lifecycle. Registered as a SINGLETON: the generator
+// is fitted exactly once (lazily, on first request, off the request thread) and
+// reused for all subsequent generation.
+//
+// Model: SMOTENCGenerator<double> via the synthetic-data module's first-class API:
+//
+//   ISyntheticTabularGenerator<T>.Fit(Matrix, IReadOnlyList<ColumnMetadata>, epochs)
+//   → Generate(numSamples)
+//
+// SMOTE-NC interpolates between nearest-neighbor seed rows, handling the
+// categorical Education column natively (the schema is actually passed to Fit —
+// "NC" = Nominal + Continuous).
+//
+// Why SMOTENC and not CTGANGenerator (all verified empirically on 0.213.3 with
+// this 50-row seed set):
+// - CTGAN's own Fit/Generate runs, but the GAN does not converge on small data:
+//   at 100 epochs (17s) generated ranges overshoot badly (negative incomes, ages
+//   to 96, credit-score std 3× real); at 300 epochs (63s) it diverges outright
+//   (income std 188k vs real 32k, credit scores −2214..2142). More epochs = worse.
+// - CopulaSynthGenerator fits instantly with good marginals, but pairwise
+//   correlations degrade (0.82–0.93 vs real 0.95–0.99) and categorical values
+//   come back with float noise (Education = 1.0000003).
+// - SMOTENCGenerator fits instantly and preserves both marginals AND pairwise
+//   correlations (synthetic 0.989/0.956/0.972 vs real 0.989/0.954/0.968), with
+//   exact-integer categorical values. For a 50-row seed set, neighborhood
+//   interpolation is simply the right tool.
+// - The previous AiModelBuilder.BuildAsync + Predict(noise) path never invoked
+//   CTGAN's adversarial Fit at all — the schema was built but never passed, and
+//   generation went through the generic NeuralNetworkBase.Predict contract.
+
+public sealed class SmoteSyntheticDataFacade : ISyntheticDataFacade
+{
+    public const int SeedRows = 50;
+    public const int FeatureCount = 4;
+    public const int KNeighbors = 5;
+    private const int Seed = 42;
+
+    public static readonly string[] ColumnNames = ["Age", "Income", "Education", "CreditScore"];
+
+    // Customer profile schema: Age, Income, Education (categorical), CreditScore.
+    // Passed to Fit so the generator treats Education as nominal, not continuous.
+    public static readonly ColumnMetadata[] Schema =
     [
         new ColumnMetadata("Age",         ColumnDataType.Continuous),
         new ColumnMetadata("Income",      ColumnDataType.Continuous),
@@ -26,107 +80,75 @@ public sealed class SyntheticController : ControllerBase
         new ColumnMetadata("CreditScore", ColumnDataType.Continuous),
     ];
 
-    private const int FeatureCount = 4; // matches Schema length
-    private const int SeedRows = 50;
-
-    // 50 realistic customer profiles (seed=7 for reproducibility)
     private static readonly Matrix<double> SeedData = BuildSeedData();
+    private static readonly List<ColumnStats> RealStats = ComputeStats(SeedData);
 
-    /// <summary>
-    /// POC: Synthetic tabular data generation using CTGANGenerator via AiDotNet facade.
-    /// CTGANGenerator extends NeuralNetworkBase&lt;T&gt; which implements
-    /// IFullModel&lt;T, Tensor&lt;T&gt;, Tensor&lt;T&gt;&gt;, so it integrates with
-    /// AiModelBuilder&lt;double, Tensor&lt;double&gt;, Tensor&lt;double&gt;&gt; directly.
-    /// Demonstrates DataLoaders.FromTensors → AiModelBuilder.ConfigureModel → BuildAsync → Predict.
-    /// </summary>
-    [HttpPost("Generate")]
-    public async Task<ActionResult<SyntheticPocResponse>> Generate(
-        [FromBody] SyntheticRequest request,
-        CancellationToken cancellationToken)
+    // Fitted once per process; all requests share the result.
+    private readonly Lazy<Task<FittedGenerator>> _generator = new(
+        () => Task.Run(FitGenerator),
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
+    // Generate advances the generator's internal RNG; serialize access.
+    private readonly SemaphoreSlim _generateLock = new(1, 1);
+
+    private sealed record FittedGenerator(SMOTENCGenerator<double> Generator, double FitMs);
+
+    public async Task<SyntheticGenerationResult> GenerateAsync(
+        int numSamples, CancellationToken ct = default)
     {
-        int numSamples = Math.Clamp(request.NumSamples ?? 20, 1, 200);
+        // Fitting is shared state — never cancelled by an individual request;
+        // the request just stops waiting for it.
+        var fitted = await _generator.Value.WaitAsync(ct);
 
-        var totalTimer = Stopwatch.StartNew();
-        var trainTimer = Stopwatch.StartNew();
+        var generateTimer = Stopwatch.StartNew();
 
-        // ─────────────────────────────────────────────────────────────────
-        // 1. Convert seed Matrix to Tensor and wrap in data loader
-        //    Shape: [SeedRows, FeatureCount] — unsupervised, input == target
-        // ─────────────────────────────────────────────────────────────────
-        var seedTensor = MatrixToTensor(SeedData);
-        var dataLoader = DataLoaders.FromTensors(seedTensor, seedTensor);
-
-        // ─────────────────────────────────────────────────────────────────
-        // 2. Configure CTGANGenerator
-        //    CTGANGenerator → NeuralNetworkBase<T> → IFullModel<T, Tensor<T>, Tensor<T>>
-        // ─────────────────────────────────────────────────────────────────
-        var architecture = new NeuralNetworkArchitecture<double>(
-            inputFeatures: FeatureCount,
-            outputSize: FeatureCount);
-
-        var ctganOptions = new CTGANOptions<double>
+        Matrix<double> synthetic;
+        await _generateLock.WaitAsync(ct);
+        try
         {
-            EmbeddingDimension = 64,
-            GeneratorDimensions = [128, 128],
-            DiscriminatorDimensions = [128, 128],
-            BatchSize = Math.Min(SeedRows, 16),
-        };
+            synthetic = fitted.Generator.Generate(numSamples);
+        }
+        finally
+        {
+            _generateLock.Release();
+        }
 
-        var generator = new CTGANGenerator<double>(architecture, ctganOptions);
+        generateTimer.Stop();
 
-        // Full facade path: ConfigureDataLoader + ConfigureModel + BuildAsync
-        var result = await new AiModelBuilder<double, Tensor<double>, Tensor<double>>()
-            .ConfigureDataLoader(dataLoader)
-            .ConfigureModel(generator)
-            .BuildAsync();
-
-        trainTimer.Stop();
-
-        // ─────────────────────────────────────────────────────────────────
-        // 3. Generate synthetic rows via AiModelResult.Predict
-        //    Noise input shape: [numSamples, EmbeddingDim] — Gaussian noise seed
-        // ─────────────────────────────────────────────────────────────────
-        var inferenceTimer = Stopwatch.StartNew();
-
-        var noiseTensor = BuildNoiseTensor(numSamples, embeddingDim: 64);
-        var syntheticTensor = result.Predict(noiseTensor);
-
-        inferenceTimer.Stop();
-        totalTimer.Stop();
-
-        // ─────────────────────────────────────────────────────────────────
-        // 4. Collect comparison statistics (real vs synthetic)
-        // ─────────────────────────────────────────────────────────────────
-        var realStats = ComputeStats(SeedData);
-        var syntheticStats = ComputeTensorStats(syntheticTensor, numSamples);
-        var syntheticRows = TensorToRows(syntheticTensor, numSamples);
-
-        return Ok(new SyntheticPocResponse(
-            SyntheticSamples: syntheticRows,
-            RealStats: realStats,
-            SyntheticStats: syntheticStats,
-            ModelInfo: new SyntheticModelInfo(
-                ModelType: "CTGANGenerator",
-                EmbeddingDimension: 64,
-                GeneratorDimensions: [128, 128],
-                DiscriminatorDimensions: [128, 128],
-                SeedRows: SeedRows,
-                GeneratedSamples: numSamples,
-                ColumnSchema: Schema.Select(c => new ColumnSchema(
-                    c.Name, c.DataType.ToString(), c.Categories?.ToList())).ToList()),
-            FacadePattern: "AiModelBuilder<double, Tensor<double>, Tensor<double>>" +
-                           ".ConfigureDataLoader(DataLoaders.FromTensors(...))" +
-                           ".ConfigureModel(CTGANGenerator<double>)" +
-                           ".BuildAsync() → AiModelResult.Predict(Tensor<double>)",
-            InterfaceChain: "CTGANGenerator → NeuralNetworkBase<T> → IFullModel<T, Tensor<T>, Tensor<T>>",
-            Timings: new SyntheticTimings(
-                TotalMs: Math.Round(totalTimer.Elapsed.TotalMilliseconds, 3),
-                TrainMs: Math.Round(trainTimer.Elapsed.TotalMilliseconds, 3),
-                InferenceMs: Math.Round(inferenceTimer.Elapsed.TotalMilliseconds, 3)),
-            System: BuildSystemInfo()));
+        return new SyntheticGenerationResult(
+            Rows: MatrixToRows(synthetic),
+            RealStats: RealStats,
+            SyntheticStats: ComputeStats(synthetic),
+            Correlations: ComputeCorrelations(SeedData, synthetic),
+            FitMs: fitted.FitMs,
+            GenerateMs: generateTimer.Elapsed.TotalMilliseconds,
+            FacadePattern:
+                "ISyntheticDataFacade → SmoteSyntheticDataFacade (singleton, fitted once)" +
+                $" | new SMOTENCGenerator<double>(SMOTENCOptions(K={KNeighbors}, Seed={Seed}))" +
+                $" → Fit(Matrix[{SeedRows},{FeatureCount}], ColumnMetadata[{FeatureCount}] (Education categorical), epochs:1)" +
+                " → Generate(numSamples) → Matrix[numSamples,4] (categorical column decoded to exact category indices)",
+            InterfaceChain:
+                "SMOTENCGenerator<T> → SyntheticTabularGeneratorBase<T> → ISyntheticTabularGenerator<T>");
     }
 
-    // ─── Seed data ────────────────────────────────────────────────────────
+    // ─── One-time fit ─────────────────────────────────────────────────────────
+
+    private static FittedGenerator FitGenerator()
+    {
+        var timer = Stopwatch.StartNew();
+
+        var generator = new SMOTENCGenerator<double>(new SMOTENCOptions<double>
+        {
+            K = KNeighbors,
+            Seed = Seed,
+        });
+        generator.Fit(SeedData, Schema, epochs: 1); // epochs is unused by SMOTE-NC
+
+        timer.Stop();
+        return new FittedGenerator(generator, timer.Elapsed.TotalMilliseconds);
+    }
+
+    // ─── Seed data ────────────────────────────────────────────────────────────
 
     private static Matrix<double> BuildSeedData()
     {
@@ -156,63 +178,27 @@ public sealed class SyntheticController : ControllerBase
         return new Matrix<double>(rows);
     }
 
-    // ─── Tensor helpers ───────────────────────────────────────────────────
+    // ─── Row / statistics helpers ─────────────────────────────────────────────
 
-    private static Tensor<double> MatrixToTensor(Matrix<double> matrix)
+    private static List<List<double>> MatrixToRows(Matrix<double> matrix)
     {
-        int rows = matrix.Rows, cols = matrix.Columns;
-        var values = new double[rows * cols];
-        for (int r = 0; r < rows; r++)
-            for (int c = 0; c < cols; c++)
-                values[r * cols + c] = matrix[r, c];
-        return new Tensor<double>(values, [rows, cols]);
-    }
-
-    // Gaussian noise seed for the generator (Box-Muller transform)
-    private static Tensor<double> BuildNoiseTensor(int numSamples, int embeddingDim)
-    {
-        var rng = new Random(42);
-        var values = new double[numSamples * embeddingDim];
-        for (int i = 0; i < values.Length; i += 2)
+        var rows = new List<List<double>>(matrix.Rows);
+        for (int r = 0; r < matrix.Rows; r++)
         {
-            double u1 = 1.0 - rng.NextDouble();
-            double u2 = 1.0 - rng.NextDouble();
-            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
-            values[i] = z;
-            if (i + 1 < values.Length)
-                values[i + 1] = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
-        }
-        return new Tensor<double>(values, [numSamples, embeddingDim]);
-    }
-
-    private static List<List<double>> TensorToRows(Tensor<double> tensor, int limit)
-    {
-        // Expect shape [numSamples, FeatureCount] or [numSamples, FeatureCount, ...]
-        int actualRows = tensor.Shape[0];
-        int cols = tensor.Shape.Length > 1 ? tensor.Shape[1] : 1;
-        int n = Math.Min(limit, actualRows);
-
-        var rows = new List<List<double>>();
-        for (int r = 0; r < n; r++)
-        {
-            var row = new List<double>();
-            for (int c = 0; c < cols; c++)
-                row.Add(Math.Round(tensor[r, c], 4));
+            var row = new List<double>(matrix.Columns);
+            for (int c = 0; c < matrix.Columns; c++)
+                row.Add(Math.Round(matrix[r, c], 4));
             rows.Add(row);
         }
         return rows;
     }
 
-    // ─── Statistics ───────────────────────────────────────────────────────
-
     private static List<ColumnStats> ComputeStats(Matrix<double> data)
     {
-        int rows = data.Rows;
-        var stats = new List<ColumnStats>();
-
+        var stats = new List<ColumnStats>(FeatureCount);
         for (int col = 0; col < Math.Min(FeatureCount, data.Columns); col++)
         {
-            var values = Enumerable.Range(0, rows).Select(r => data[r, col]).ToArray();
+            var values = Enumerable.Range(0, data.Rows).Select(r => data[r, col]).ToArray();
             double mean = values.Average();
             double variance = values.Select(v => (v - mean) * (v - mean)).Average();
 
@@ -226,34 +212,97 @@ public sealed class SyntheticController : ControllerBase
         return stats;
     }
 
-    private static List<ColumnStats> ComputeTensorStats(Tensor<double> tensor, int numRows)
+    // Pearson correlation for every column pair, real vs synthetic — the headline
+    // fidelity metric for synthetic tabular data.
+    private static List<CorrelationStats> ComputeCorrelations(
+        Matrix<double> real, Matrix<double> synthetic)
     {
-        int rows = Math.Min(numRows, tensor.Shape[0]);
-        int cols = Math.Min(FeatureCount, tensor.Shape.Length > 1 ? tensor.Shape[1] : 1);
-        var stats = new List<ColumnStats>();
-
-        for (int col = 0; col < cols; col++)
-        {
-            var values = Enumerable.Range(0, rows).Select(r => tensor[r, col]).ToArray();
-            double mean = values.Average();
-            double variance = values.Select(v => (v - mean) * (v - mean)).Average();
-
-            stats.Add(new ColumnStats(
-                Column: Schema[col].Name,
-                Min: Math.Round(values.Min(), 3),
-                Max: Math.Round(values.Max(), 3),
-                Mean: Math.Round(mean, 3),
-                Std: Math.Round(Math.Sqrt(variance), 3)));
-        }
-        return stats;
+        var result = new List<CorrelationStats>();
+        for (int a = 0; a < FeatureCount; a++)
+            for (int b = a + 1; b < FeatureCount; b++)
+                result.Add(new CorrelationStats(
+                    Pair: $"{ColumnNames[a]}~{ColumnNames[b]}",
+                    Real: Math.Round(PearsonCorrelation(real, a, b), 4),
+                    Synthetic: Math.Round(PearsonCorrelation(synthetic, a, b), 4)));
+        return result;
     }
 
-    // ─── System info ─────────────────────────────────────────────────────
+    private static double PearsonCorrelation(Matrix<double> m, int a, int b)
+    {
+        int n = m.Rows;
+        double meanA = 0, meanB = 0;
+        for (int r = 0; r < n; r++) { meanA += m[r, a]; meanB += m[r, b]; }
+        meanA /= n; meanB /= n;
+
+        double cov = 0, varA = 0, varB = 0;
+        for (int r = 0; r < n; r++)
+        {
+            cov += (m[r, a] - meanA) * (m[r, b] - meanB);
+            varA += Math.Pow(m[r, a] - meanA, 2);
+            varB += Math.Pow(m[r, b] - meanB, 2);
+        }
+        double denom = Math.Sqrt(varA * varB);
+        return denom < 1e-12 ? 0 : cov / denom;
+    }
+}
+
+// ─── Controller ───────────────────────────────────────────────────────────────
+// Thin HTTP layer: validates input, delegates to ISyntheticDataFacade, shapes response.
+
+[ApiController]
+[Route("api/[controller]")]
+public sealed class SyntheticController : ControllerBase
+{
+    private readonly ISyntheticDataFacade _facade;
+
+    public SyntheticController(ISyntheticDataFacade facade) => _facade = facade;
+
+    /// <summary>
+    /// POC: Synthetic tabular data generation using SMOTENCGenerator behind
+    /// ISyntheticDataFacade. The generator is fitted once per process via the
+    /// synthetic-data module's first-class ISyntheticTabularGenerator API
+    /// (Fit with explicit ColumnMetadata so Education is treated as categorical)
+    /// and cached; requests pay generation cost only (~ms). The response includes
+    /// per-column stats and pairwise correlations, real vs synthetic.
+    /// </summary>
+    [HttpPost("Generate")]
+    public async Task<ActionResult<SyntheticPocResponse>> Generate(
+        [FromBody] SyntheticRequest request,
+        CancellationToken cancellationToken)
+    {
+        int numSamples = Math.Clamp(request.NumSamples ?? 20, 1, 200);
+
+        var totalTimer = Stopwatch.StartNew();
+        var result = await _facade.GenerateAsync(numSamples, cancellationToken);
+        totalTimer.Stop();
+
+        return Ok(new SyntheticPocResponse(
+            SyntheticSamples: result.Rows,
+            RealStats: result.RealStats,
+            SyntheticStats: result.SyntheticStats,
+            Correlations: result.Correlations,
+            ModelInfo: new SyntheticModelInfo(
+                ModelType: "SMOTENCGenerator",
+                KNeighbors: SmoteSyntheticDataFacade.KNeighbors,
+                SeedRows: SmoteSyntheticDataFacade.SeedRows,
+                GeneratedSamples: numSamples,
+                ColumnSchema: SmoteSyntheticDataFacade.Schema.Select(c => new ColumnSchema(
+                    c.Name, c.DataType.ToString(), c.Categories?.ToList())).ToList()),
+            FacadePattern: result.FacadePattern,
+            InterfaceChain: result.InterfaceChain,
+            Timings: new SyntheticTimings(
+                TotalMs: Math.Round(totalTimer.Elapsed.TotalMilliseconds, 3),
+                TrainMs: Math.Round(result.FitMs, 3),
+                InferenceMs: Math.Round(result.GenerateMs, 3)),
+            System: BuildSystemInfo()));
+    }
 
     private static PocSystemInfo BuildSystemInfo() => new(
         Os: RuntimeInformation.OSDescription,
         Framework: RuntimeInformation.FrameworkDescription,
-        LibraryVersion: typeof(AiModelBuilder<,,>).Assembly
+        // NB: AiDotNet 0.213.3 ships with stale assembly version attributes (0.204.0);
+        // this reports what the loaded assembly declares about itself.
+        LibraryVersion: typeof(SMOTENCGenerator<>).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? "unknown");
 }
@@ -267,6 +316,7 @@ public sealed record SyntheticPocResponse(
     [property: JsonPropertyName("syntheticSamples")] List<List<double>> SyntheticSamples,
     [property: JsonPropertyName("realStats")] List<ColumnStats> RealStats,
     [property: JsonPropertyName("syntheticStats")] List<ColumnStats> SyntheticStats,
+    [property: JsonPropertyName("correlations")] List<CorrelationStats> Correlations,
     [property: JsonPropertyName("modelInfo")] SyntheticModelInfo ModelInfo,
     [property: JsonPropertyName("facadePattern")] string FacadePattern,
     [property: JsonPropertyName("interfaceChain")] string InterfaceChain,
@@ -280,11 +330,14 @@ public sealed record ColumnStats(
     [property: JsonPropertyName("mean")] double Mean,
     [property: JsonPropertyName("std")] double Std);
 
+public sealed record CorrelationStats(
+    [property: JsonPropertyName("pair")] string Pair,
+    [property: JsonPropertyName("real")] double Real,
+    [property: JsonPropertyName("synthetic")] double Synthetic);
+
 public sealed record SyntheticModelInfo(
     [property: JsonPropertyName("modelType")] string ModelType,
-    [property: JsonPropertyName("embeddingDimension")] int EmbeddingDimension,
-    [property: JsonPropertyName("generatorDimensions")] int[] GeneratorDimensions,
-    [property: JsonPropertyName("discriminatorDimensions")] int[] DiscriminatorDimensions,
+    [property: JsonPropertyName("kNeighbors")] int KNeighbors,
     [property: JsonPropertyName("seedRows")] int SeedRows,
     [property: JsonPropertyName("generatedSamples")] int GeneratedSamples,
     [property: JsonPropertyName("columnSchema")] List<ColumnSchema> ColumnSchema);

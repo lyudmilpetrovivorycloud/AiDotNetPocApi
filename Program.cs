@@ -14,6 +14,7 @@ builder.Services.AddControllers();
 // serves all subsequent requests from the cached trained model.
 builder.Services.AddSingleton<ISpamClassificationFacade, TransformerSpamClassificationFacade>();
 builder.Services.AddSingleton<INerFacade, TransformerNerFacade>();
+builder.Services.AddSingleton<ISyntheticDataFacade, SmoteSyntheticDataFacade>();
 
 var app = builder.Build();
 
