@@ -10,7 +10,9 @@ builder.Services.Configure<FormOptions>(options =>
     options.MultipartBodyLengthLimit = long.MaxValue);
 
 builder.Services.AddControllers();
-builder.Services.AddTransient<ISpamClassificationFacade, TransformerSpamClassificationFacade>();
+// Singleton: the facade trains its FTTransformerNetwork once (lazily, on first
+// request) and serves all subsequent requests from the cached trained model.
+builder.Services.AddSingleton<ISpamClassificationFacade, TransformerSpamClassificationFacade>();
 
 var app = builder.Build();
 
