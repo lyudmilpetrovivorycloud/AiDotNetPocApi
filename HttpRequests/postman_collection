@@ -1,0 +1,146 @@
+{
+  "info": {
+    "_postman_id": "4e043af9-b927-4ed1-9ef7-5cc615c00dcc",
+    "name": "testing-pocs",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "51041277",
+    "_collection_link": "https://go.postman.co/collection/51041277-4e043af9-b927-4ed1-9ef7-5cc615c00dcc?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Classification",
+      "item": [
+        {
+          "name": "pure-features",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n  \"samples\": [\r\n    { \"features\": [22,  0.62, 7, 5, 4, 3, 0.45, 3.2], \"label\": 1 },\r\n    { \"features\": [35,  0.60, 5, 3, 3, 2, 0.35, 3.8], \"label\": 1 },\r\n    { \"features\": [210, 0.03, 0, 0, 0, 0, 0.01, 6.8], \"label\": 0 },\r\n    { \"features\": [145, 0.07, 1, 1, 0, 0, 0.03, 5.9], \"label\": 0 }\r\n  ]\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://localhost:60711/api/Classification/Predict",
+              "protocol": "https",
+              "host": [
+                "localhost"
+              ],
+              "port": "60711",
+              "path": [
+                "api",
+                "Classification",
+                "Predict"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "predict-text",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n  \"messages\": [\r\n    {\r\n      \"text\": \"CONGRATULATIONS WINNER!!! You WON a FREE cash PRIZE! Claim your $$$ at http://bit.ly/claim-now and http://win-big.io NOW! Offer expires TODAY, act now, LIMITED time only! HURRY!!\",\r\n      \"label\": 1\r\n    },\r\n    {\r\n      \"text\": \"Hi team, following up on yesterday's planning meeting. We agreed to move the database migration to next sprint so that the reporting work can finish first. Sarah will update the timeline document and share it before Friday. Please review the updated estimates when you get a chance and add any concerns as comments. The staging environment will be unavailable on Thursday morning while operations applies security patches. Thanks everyone for the productive discussion, and let me know if anything important is missing from the notes.\",\r\n      \"label\": 0\r\n    },\r\n    {\r\n      \"text\": \"Thanks! See you at the meeting at 3pm.\",\r\n      \"label\": 0\r\n    },{\r\n      \"text\": \"Dear customer, we detected unusual activity on your account. To avoid suspension, please verify your billing information at https://secure-verify.example.com/account within 24 hours. A refund of 49.99 is pending and will be released once verification is complete. For your security, this link expires today. If you have questions about this charge or your cash back balance, visit https://billing.example.com/help. Thank you for your prompt attention. Account Services Team\",\r\n      \"label\": 1\r\n    }\r\n  ]\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://localhost:60711/api/Classification/PredictText",
+              "protocol": "https",
+              "host": [
+                "localhost"
+              ],
+              "port": "60711",
+              "path": [
+                "api",
+                "Classification",
+                "PredictText"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "NER",
+      "item": [
+        {
+          "name": "analyze",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n    \"sentences\": [\r\n        \"Apple Inc announced the new iPhone in San Francisco\",\r\n        \"Elon Musk leads Tesla and SpaceX in California\",\r\n        \"Google acquired YouTube for over a billion dollars\",\r\n        \"Paris and London are popular European destinations\",\r\n        \"Barack Obama served as 44th President\",\r\n        \"Tesla acquired SpaceX in London\",\r\n        \"Barack Obama announced the new iPhone in Paris\",\r\n        \"Google and Apple Inc are popular in California\",\r\n        \"Microsoft was founded by Bill Gates in Seattle\",\r\n        \"i ate an apple while walking in paris with elon\",\r\n        \"Visit Paris, London and Tesla.\",\r\n        \"Tesla plans to build a large new battery factory somewhere on the west coast near beautiful San Francisco\",\r\n        \"Musk and Obama met in Francisco\",\r\n        \"Elon Musk leads Tesla and SpaceX in California\",\r\n        \"Paris and London are popular European destinations\",\r\n        \"Apple Inc acquired YouTube in London\",\r\n        \"Barack Obama leads Google in Paris\",\r\n        \"Amazon opened new offices in Toronto last quarter\",\r\n        \"Taylor Swift performed at Wembley Stadium on Friday\",\r\n        \"my friend elon moved to paris last spring\",\r\n        \"Tesla, SpaceX and Google, all grew this year\"\r\n    ]\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://localhost:60711/api/Ner/Analyze",
+              "protocol": "https",
+              "host": [
+                "localhost"
+              ],
+              "port": "60711",
+              "path": [
+                "api",
+                "Ner",
+                "Analyze"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Synthetic",
+      "item": [
+        {
+          "name": "generate",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\r\n  \"numSamples\": 200\r\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://localhost:60711/api/Synthetic/Generate",
+              "protocol": "https",
+              "host": [
+                "localhost"
+              ],
+              "port": "60711",
+              "path": [
+                "api",
+                "Synthetic",
+                "Generate"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
