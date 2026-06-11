@@ -277,3 +277,92 @@ Content-Type: application/json
     { "label": 1 }
   ]
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PredictText — raw text in, classification out
+# SpamFeatureExtractor derives the 8-feature vector from each message
+# (URL regex, money/urgency keyword patterns, caps/word statistics) and the
+# extracted features are echoed in every prediction so the derivation is
+# auditable. Same trained model as Predict.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+### 14. PredictText — real message texts across the difficulty spectrum
+# Message 1: classic shouty scam blast. Extracted (verified): wordCount=25,
+#            capsRatio=0.43, exclamations=8, urlCount=2, moneyKeywords=6,
+#            urgencyKeywords=4, linkRatio=0.08, avgWordLen=4.59 — lands squarely
+#            in the spam training distribution.
+# Message 2: ordinary 85-word project email. Extracted: capsRatio=0.018, all
+#            keyword counts 0 — squarely legit.
+# Message 3: 8-word personal note — out-of-distribution short legit (the test-5
+#            pattern from the feature-level suite).
+# EXPECTED (verified): accuracy = 1.0 —
+#            msg1 → spam (rawScore ≈ 0.9997), msg2 → not-spam (≈ 0.0003),
+#            msg3 → not-spam (≈ 0.0005; the zero keyword counts win despite the
+#            spam-like brevity).
+POST {{baseUrl}}/api/Classification/PredictText
+Content-Type: application/json
+
+{
+  "messages": [
+    {
+      "text": "CONGRATULATIONS WINNER!!! You WON a FREE cash PRIZE! Claim your $$$ at http://bit.ly/claim-now and http://win-big.io NOW! Offer expires TODAY, act now, LIMITED time only! HURRY!!",
+      "label": 1
+    },
+    {
+      "text": "Hi team, following up on yesterday's planning meeting. We agreed to move the database migration to next sprint so that the reporting work can finish first. Sarah will update the timeline document and share it before Friday. Please review the updated estimates when you get a chance and add any concerns as comments. The staging environment will be unavailable on Thursday morning while operations applies security patches. Thanks everyone for the productive discussion, and let me know if anything important is missing from the notes.",
+      "label": 0
+    },
+    {
+      "text": "Thanks! See you at the meeting at 3pm.",
+      "label": 0
+    }
+  ]
+}
+
+
+### 15. PredictText CHALLENGE — polished phishing email (end-to-end false negative)
+# A realistic account-suspension phish written in clean corporate prose: no
+# shouting, no exclamation marks, but two phishing links, a money reference and
+# a deadline. Extracted (verified): wordCount=66, capsRatio=0.024,
+# exclamations=0, urlCount=2, moneyKeywords=1, urgencyKeywords=1,
+# linkRatio=0.03, avgWordLen=5.06 — the surface features all read "legit".
+# EXPECTED (verified): "not-spam" with rawScore ≈ 0.0007 — a CONFIDENT FALSE
+#            NEGATIVE, accuracy = 0.0. This reproduces the feature-level test-3
+#            finding end-to-end from raw text: the model keys on prose
+#            statistics, and polished phishing is indistinguishable from a
+#            normal business email in those statistics.
+POST {{baseUrl}}/api/Classification/PredictText
+Content-Type: application/json
+
+{
+  "messages": [
+    {
+      "text": "Dear customer, we detected unusual activity on your account. To avoid suspension, please verify your billing information at https://secure-verify.example.com/account within 24 hours. A refund of 49.99 is pending and will be released once verification is complete. For your security, this link expires today. If you have questions about this charge or your cash back balance, visit https://billing.example.com/help. Thank you for your prompt attention. Account Services Team",
+      "label": 1
+    }
+  ]
+}
+
+
+### 16. PredictText validation — empty messages array
+# EXPECTED (verified): 400 Bad Request — "Provide at least one message to classify."
+POST {{baseUrl}}/api/Classification/PredictText
+Content-Type: application/json
+
+{
+  "messages": []
+}
+
+
+### 17. PredictText validation — whitespace-only text
+# EXPECTED (verified): 400 Bad Request — "Message 0: text must be a non-empty string."
+POST {{baseUrl}}/api/Classification/PredictText
+Content-Type: application/json
+
+{
+  "messages": [
+    { "text": "   " }
+  ]
+}

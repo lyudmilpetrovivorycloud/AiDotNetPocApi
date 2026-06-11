@@ -11,6 +11,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace AiDotNetPocApi.Controllers;
 
@@ -314,6 +315,91 @@ public sealed class TransformerSpamClassificationFacade : ISpamClassificationFac
     }
 }
 
+// ─── Feature extraction ───────────────────────────────────────────────────────
+// Derives the model's 8-feature vector from raw message text, mirroring the
+// semantics the synthetic training data was generated under. This is the bridge
+// that lets the API accept real email text instead of pre-computed features.
+//
+// Definitions (must stay consistent with the training-data generator above —
+// the model only knows these features in these units):
+//   [0] wordCount        whitespace-separated tokens
+//   [1] capsRatio        uppercase letters / total letters (0 when no letters)
+//   [2] exclamations     count of '!' characters
+//   [3] urlCount         matches of http(s):// or www. URLs
+//   [4] moneyKeywords    occurrences of money patterns (free, $$$, winner,
+//                        prize, % off, cash, win)
+//   [5] urgencyKeywords  occurrences of urgency patterns (act now, urgent,
+//                        expires/expiring, limited, hurry, last chance)
+//   [6] linkRatio        URL tokens / wordCount (0–1)
+//   [7] avgWordLen       mean letter+digit count per non-URL token
+
+public static class SpamFeatureExtractor
+{
+    private static readonly Regex UrlPattern = new(
+        @"(https?://|www\.)\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex[] MoneyPatterns = BuildPatterns(
+        @"\bfree\b", @"\$\$\$", @"\bwinner\b", @"\bprize\b", @"%\s*off",
+        @"\bcash\b", @"\bwin\b");
+
+    private static readonly Regex[] UrgencyPatterns = BuildPatterns(
+        @"\bact\s+now\b", @"\burgent\w*\b", @"\bexpir\w+\b", @"\blimited\b",
+        @"\bhurry\b", @"\blast\s+chance\b");
+
+    private static Regex[] BuildPatterns(params string[] patterns) =>
+        [.. patterns.Select(p => new Regex(p, RegexOptions.IgnoreCase | RegexOptions.Compiled))];
+
+    public static List<double> Extract(string text)
+    {
+        var tokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        int wordCount = tokens.Length;
+
+        int letters = 0, uppercase = 0, exclamations = 0;
+        foreach (char c in text)
+        {
+            if (char.IsLetter(c))
+            {
+                letters++;
+                if (char.IsUpper(c)) uppercase++;
+            }
+            else if (c == '!')
+            {
+                exclamations++;
+            }
+        }
+
+        int urlCount = UrlPattern.Matches(text).Count;
+        int urlTokens = tokens.Count(t => UrlPattern.IsMatch(t));
+        int moneyKeywords = MoneyPatterns.Sum(p => p.Matches(text).Count);
+        int urgencyKeywords = UrgencyPatterns.Sum(p => p.Matches(text).Count);
+
+        // URL tokens are excluded so a single 40-char link doesn't dominate the
+        // mean; token "length" counts letters/digits only, so "WIN!!!" measures 3.
+        double totalLen = 0;
+        int measured = 0;
+        foreach (var token in tokens)
+        {
+            if (UrlPattern.IsMatch(token)) continue;
+            int len = token.Count(char.IsLetterOrDigit);
+            if (len == 0) continue;
+            totalLen += len;
+            measured++;
+        }
+
+        return
+        [
+            wordCount,
+            Math.Round(letters > 0 ? (double)uppercase / letters : 0.0, 4),
+            exclamations,
+            urlCount,
+            moneyKeywords,
+            urgencyKeywords,
+            Math.Round(wordCount > 0 ? (double)urlTokens / wordCount : 0.0, 4),
+            Math.Round(measured > 0 ? totalLen / measured : 0.0, 4),
+        ];
+    }
+}
+
 // ─── Controller ───────────────────────────────────────────────────────────────
 // Thin HTTP layer: validates input, delegates to ISpamClassificationFacade, shapes response.
 
@@ -364,34 +450,88 @@ public sealed class ClassificationController : ControllerBase
         var result = await _facade.PredictAsync(request.Samples, cancellationToken);
         totalTimer.Stop();
 
-        double? accuracy = result.Predictions.All(p => p.Correct.HasValue)
-            ? Math.Round(result.Predictions.Count(p => p.Correct == true) / (double)result.Predictions.Count, 4)
-            : null;
-
         return Ok(new ClassificationPocResponse(
             Predictions: result.Predictions,
-            ModelInfo: new ClassificationModelInfo(
-                ModelType: "FTTransformerNetwork",
-                EmbeddingDimension: TransformerSpamClassificationFacade.EmbeddingDimension,
-                NumHeads: TransformerSpamClassificationFacade.NumHeads,
-                NumLayers: TransformerSpamClassificationFacade.NumLayers,
-                FeatureCount: FeatureCount,
-                TrainSamples: TransformerSpamClassificationFacade.TrainSamples,
-                TrainEpochs: result.EpochsRun,
-                ParameterCount: result.ParameterCount,
-                FinalTrainLoss: Math.Round(result.FinalTrainLoss, 6),
-                FeatureNames: ["wordCount", "capsRatio", "exclamations", "urlCount",
-                               "moneyKeywords", "urgencyKeywords", "linkRatio", "avgWordLen"],
-                ClassNames: ["not-spam", "spam"]),
+            ModelInfo: BuildModelInfo(result),
             FacadePattern: result.FacadePattern,
             InterfaceChain: result.InterfaceChain,
-            Accuracy: accuracy,
-            Timings: new PocTimings(
-                TotalMs: Math.Round(totalTimer.Elapsed.TotalMilliseconds, 3),
-                TrainMs: Math.Round(result.TrainMs, 3),
-                InferenceMs: Math.Round(result.InferenceMs, 3)),
+            Accuracy: ComputeAccuracy(result.Predictions),
+            Timings: BuildTimings(totalTimer, result),
             System: BuildSystemInfo()));
     }
+
+    /// <summary>
+    /// POC: classify raw email/message text. SpamFeatureExtractor derives the same
+    /// 8-feature vector the model was trained on directly from each text, and the
+    /// samples are then served by the same trained FTTransformerNetwork as Predict.
+    /// Each prediction echoes the extracted features so the derivation is auditable.
+    /// </summary>
+    [HttpPost("PredictText")]
+    public async Task<ActionResult<TextClassificationPocResponse>> PredictText(
+        [FromBody] TextClassificationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Messages is null || request.Messages.Count == 0)
+            return BadRequest(new { error = "Provide at least one message to classify." });
+
+        for (int i = 0; i < request.Messages.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(request.Messages[i].Text))
+                return BadRequest(new { error = $"Message {i}: text must be a non-empty string." });
+        }
+
+        var totalTimer = Stopwatch.StartNew();
+
+        var samples = request.Messages
+            .Select(m => new ClassificationSample(SpamFeatureExtractor.Extract(m.Text), m.Label))
+            .ToList();
+
+        var result = await _facade.PredictAsync(samples, cancellationToken);
+        totalTimer.Stop();
+
+        var predictions = result.Predictions
+            .Select((p, i) => new TextSamplePrediction(
+                Text: request.Messages[i].Text,
+                Features: p.Features,
+                Label: p.Label,
+                RawScore: p.RawScore,
+                Prediction: p.Prediction,
+                Correct: p.Correct))
+            .ToList();
+
+        return Ok(new TextClassificationPocResponse(
+            Predictions: predictions,
+            ModelInfo: BuildModelInfo(result),
+            FacadePattern: result.FacadePattern,
+            InterfaceChain: result.InterfaceChain,
+            Accuracy: ComputeAccuracy(result.Predictions),
+            Timings: BuildTimings(totalTimer, result),
+            System: BuildSystemInfo()));
+    }
+
+    private static double? ComputeAccuracy(List<SamplePrediction> predictions) =>
+        predictions.All(p => p.Correct.HasValue)
+            ? Math.Round(predictions.Count(p => p.Correct == true) / (double)predictions.Count, 4)
+            : null;
+
+    private static ClassificationModelInfo BuildModelInfo(SpamClassificationResult result) => new(
+        ModelType: "FTTransformerNetwork",
+        EmbeddingDimension: TransformerSpamClassificationFacade.EmbeddingDimension,
+        NumHeads: TransformerSpamClassificationFacade.NumHeads,
+        NumLayers: TransformerSpamClassificationFacade.NumLayers,
+        FeatureCount: FeatureCount,
+        TrainSamples: TransformerSpamClassificationFacade.TrainSamples,
+        TrainEpochs: result.EpochsRun,
+        ParameterCount: result.ParameterCount,
+        FinalTrainLoss: Math.Round(result.FinalTrainLoss, 6),
+        FeatureNames: ["wordCount", "capsRatio", "exclamations", "urlCount",
+                       "moneyKeywords", "urgencyKeywords", "linkRatio", "avgWordLen"],
+        ClassNames: ["not-spam", "spam"]);
+
+    private static PocTimings BuildTimings(Stopwatch totalTimer, SpamClassificationResult result) => new(
+        TotalMs: Math.Round(totalTimer.Elapsed.TotalMilliseconds, 3),
+        TrainMs: Math.Round(result.TrainMs, 3),
+        InferenceMs: Math.Round(result.InferenceMs, 3));
 
     private static PocSystemInfo BuildSystemInfo() => new(
         Os: RuntimeInformation.OSDescription,
@@ -422,6 +562,30 @@ public sealed record ClassificationPocResponse(
     [property: JsonPropertyName("system")] PocSystemInfo System);
 
 public sealed record SamplePrediction(
+    [property: JsonPropertyName("features")] List<double> Features,
+    [property: JsonPropertyName("label")] int? Label,
+    [property: JsonPropertyName("rawScore")] double RawScore,
+    [property: JsonPropertyName("prediction")] string Prediction,
+    [property: JsonPropertyName("correct")] bool? Correct);
+
+public sealed record TextClassificationRequest(
+    [property: JsonPropertyName("messages")] List<TextSample> Messages);
+
+public sealed record TextSample(
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("label")] int? Label);
+
+public sealed record TextClassificationPocResponse(
+    [property: JsonPropertyName("predictions")] List<TextSamplePrediction> Predictions,
+    [property: JsonPropertyName("modelInfo")] ClassificationModelInfo ModelInfo,
+    [property: JsonPropertyName("facadePattern")] string FacadePattern,
+    [property: JsonPropertyName("interfaceChain")] string InterfaceChain,
+    [property: JsonPropertyName("accuracy")] double? Accuracy,
+    [property: JsonPropertyName("timings")] PocTimings Timings,
+    [property: JsonPropertyName("system")] PocSystemInfo System);
+
+public sealed record TextSamplePrediction(
+    [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("features")] List<double> Features,
     [property: JsonPropertyName("label")] int? Label,
     [property: JsonPropertyName("rawScore")] double RawScore,
