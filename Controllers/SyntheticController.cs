@@ -9,6 +9,17 @@ using System.Text.Json.Serialization;
 
 namespace AiDotNetPocApi.Controllers;
 
+// Synthetic data is information that's artificially created rather than collected from the real world.
+// Instead of gathering actual emails from real inboxes, you generate fake-but-realistic examples yourself — like the five spam messages
+// which were made up to look and behave like the real thing.
+// People use synthetic data when real data is scarce, private, expensive to collect, or doesn't cover enough tricky cases.
+// It lets you deliberately create the exact examples you need,
+// such as rare or hard-to-find situations, to test or train a model more thoroughly.
+// The main catch is that synthetic data is only as good as the process that made it:
+// if it doesn't capture the messiness and variety of real data,
+// a model trained on it may struggle once it faces the real world.
+
+
 // ─── Facade interface ─────────────────────────────────────────────────────────
 // Hides all AiDotNet types from the controller; controller depends only on this.
 

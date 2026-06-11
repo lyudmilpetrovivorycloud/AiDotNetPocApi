@@ -15,6 +15,18 @@ using System.Text.RegularExpressions;
 
 namespace AiDotNetPocApi.Controllers;
 
+// Classification is a type of machine learning task where the goal is to sort things into categories.
+// You give the model an example — like an email 
+// and its features — and it predicts which group that example belongs to from a fixed set of labels,
+// such as "spam" or "not spam."
+// The model learns by studying lots of examples where the correct category is already known,
+// picking up on which patterns tend to go with which label.
+// Once trained, it can take a brand-new example and assign it to the most likely category.
+// When there are just two possible labels (spam vs. not spam)
+// it's called binary classification; when there are more
+// (say, sorting email into "work," "personal," "promotions," and "spam")
+// it's called multi-class classification.
+
 // ─── Facade interface ─────────────────────────────────────────────────────────
 // Hides all AiDotNet types from the controller; controller depends only on this.
 
