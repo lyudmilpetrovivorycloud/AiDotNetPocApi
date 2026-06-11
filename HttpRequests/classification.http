@@ -1,8 +1,42 @@
 @baseUrl = https://localhost:60711
 
-# Features: wordCount, capsRatio, exclamations, urlCount, moneyKeywords, urgencyKeywords, linkRatio, avgWordLen
+# ══════════════════════════════════════════════════════════════════════════════
+# Spam classification test suite — FTTransformerNetwork behind /api/Classification/Predict
+#
+# Feature schema (8 features, in order):
+#   [0] wordCount        total words in the email
+#   [1] capsRatio        fraction of characters that are uppercase (0–1)
+#   [2] exclamations     count of '!' characters
+#   [3] urlCount         number of URLs in the body
+#   [4] moneyKeywords    count of money words ("free", "$$$", "winner", "prize", "% off")
+#   [5] urgencyKeywords  count of urgency words ("act now", "urgent", "expires", "limited")
+#   [6] linkRatio        fraction of words that are part of a link (0–1)
+#   [7] avgWordLen       average word length in characters
+#
+# Training distributions (what the model has actually seen, 50 samples each):
+#   SPAM : wordCount 30–80,  capsRatio 0.3–0.7, exclam 3–9, urls 2–5,
+#          money 2–4, urgency 2–4, linkRatio 0.2–0.5, avgWordLen 3–5
+#   LEGIT: wordCount 50–300, capsRatio 0–0.1,   exclam 0–1, urls 0–1,
+#          money 0 (always),  urgency 0,         linkRatio 0–0.05, avgWordLen 5–7.5
+#
+# Reading the response:
+#   rawScore   = P(spam), softmax output in [0,1]; prediction = "spam" iff ≥ 0.5
+#   accuracy   = fraction correct, present only when ALL samples carry a "label"
+#   timings    = first request per process also pays one-time training (trainMs);
+#                every later request is inference-only
+#
+# Note: moneyKeywords is a perfect separator in the training data (legit is ALWAYS 0,
+# spam is ALWAYS ≥ 2) — several tests below deliberately exploit that gap.
+# ══════════════════════════════════════════════════════════════════════════════
 
-### Predict — two clear spam samples with ground-truth labels
+
+### 1. Smoke test — textbook spam, squarely inside the spam training distribution
+# Sample A: classic "YOU ARE A WINNER!!!" lottery scam — short, 62% caps, 7 '!',
+#           5 links, money + urgency words everywhere, tiny words.
+# Sample B: "FREE pills, ACT NOW" pharma blast — same profile, slightly tamer.
+# EXPECTED: 200 OK; both predicted "spam" with rawScore ≳ 0.99 (saturated softmax,
+#           train loss < 5e-4 on this exact distribution); accuracy = 1.0.
+#           First call of the process: trainMs > 0 reported; afterwards ~0 marginal.
 POST {{baseUrl}}/api/Classification/Predict
 Content-Type: application/json
 
@@ -13,7 +47,11 @@ Content-Type: application/json
   ]
 }
 
-### Predict — two clear legit samples with ground-truth labels
+
+### 2. Smoke test — textbook legit, squarely inside the legit training distribution
+# Sample A: 210-word project status update from a colleague — calm prose, no links.
+# Sample B: 145-word meeting recap with one shared-doc link and one polite "!".
+# EXPECTED: 200 OK; both predicted "not-spam" with rawScore ≲ 0.01; accuracy = 1.0.
 POST {{baseUrl}}/api/Classification/Predict
 Content-Type: application/json
 
@@ -24,36 +62,218 @@ Content-Type: application/json
   ]
 }
 
-### Predict — mixed set with accuracy check
+
+### 3. CHALLENGE — professionally written phishing (spam disguised as legit)
+# A real-world "your account will be suspended, verify your billing details" phish:
+# 120 words of clean corporate prose (capsRatio 0.06, one '!', avgWordLen 5.4 — all
+# LEGIT territory) but 3 URLs, 3 money keywords, 3 urgency keywords (all SPAM
+# territory). 4 features vote legit, 3 vote spam — the model never saw this mix.
+# EXPECTED (verified): the model is FOOLED — "not-spam" with rawScore ≈ 0.013,
+#           accuracy = 0.0. The surface features (wordCount, capsRatio, avgWordLen)
+#           dominate the decision and the keyword counts barely register, even
+#           though moneyKeywords > 0 never occurs for legit in training. This is a
+#           genuine FALSE NEGATIVE and the most important finding in the suite:
+#           polished phishing sails straight through this model.
 POST {{baseUrl}}/api/Classification/Predict
 Content-Type: application/json
 
 {
   "samples": [
-    { "features": [22,  0.62, 7, 5, 4, 3, 0.45, 3.2], "label": 1 },
-    { "features": [35,  0.60, 5, 3, 3, 2, 0.35, 3.8], "label": 1 },
-    { "features": [210, 0.03, 0, 0, 0, 0, 0.01, 6.8], "label": 0 },
-    { "features": [145, 0.07, 1, 1, 0, 0, 0.03, 5.9], "label": 0 }
+    { "features": [120, 0.06, 1, 3, 3, 3, 0.06, 5.4], "label": 1 }
   ]
 }
 
-### Predict — unlabeled inference (no ground-truth, no accuracy field)
+
+### 4. CHALLENGE — legitimate marketing newsletter (false-positive bait)
+# An opted-in retailer sale email: "Summer sale — 20% off this weekend". 90 words,
+# capsRatio 0.12 (brand name in caps — just ABOVE the legit max of 0.1), 2 '!',
+# 2 URLs (shop + unsubscribe — above legit max of 1), 1 money keyword ("% off"),
+# 1 urgency keyword ("this weekend only"). Every feature sits in the no-man's-land
+# between the two training clusters.
+# EXPECTED (verified): correctly "not-spam", rawScore ≈ 0.001, accuracy = 1.0.
+#           No false positive — the moneyKeywords = 1 pull toward spam is swamped
+#           by the legit-looking length/caps profile. Together with test 3 this
+#           shows the model leans heavily toward "not-spam" whenever the prose
+#           statistics look normal, regardless of keyword signals.
 POST {{baseUrl}}/api/Classification/Predict
 Content-Type: application/json
 
 {
   "samples": [
-    { "features": [18,  0.70, 9, 6, 5, 4, 0.50, 3.0] },
-    { "features": [300, 0.02, 0, 0, 0, 0, 0.00, 7.1] }
+    { "features": [90, 0.12, 2, 2, 1, 1, 0.07, 5.2], "label": 0 }
   ]
 }
 
-### Validation — wrong feature count (expects 400)
+
+### 5. CHALLENGE — short personal note (out-of-distribution legit)
+# "Thanks! See you at 3pm." — 6 words, one '!', no links, no spam vocabulary.
+# Humans read this as obviously legit, but wordCount 6 is BELOW both training
+# ranges (legit starts at 50) and avgWordLen 4.2 falls in the SPAM band (3–5).
+# The only strong legit signals are the zeros in money/urgency/urls.
+# EXPECTED (verified): correctly "not-spam" with rawScore ≈ 0.0004 — just as
+#           confident as the in-distribution legit samples of test 2. The zeros in
+#           urls/money/urgency win decisively; the short length and small words do
+#           NOT flip it, so the model has not over-weighted message length.
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [6, 0.08, 1, 0, 0, 0, 0.0, 4.2], "label": 0 }
+  ]
+}
+
+
+### 6. CHALLENGE — maximum-ambiguity probe (unlabeled, boundary diagnostics)
+# Every feature is set to the midpoint between the two class distributions:
+# 65 words (overlap zone), 20% caps, 2 '!', 2 URLs, 1 money, 1 urgency,
+# linkRatio 0.12, avgWordLen 4.9. There is no "right answer" by construction.
+# EXPECTED (verified): 200 OK, no "accuracy" field (sample is unlabeled,
+#           correct = null). rawScore ≈ 0.004 → "not-spam" — nearly saturated even
+#           at the exact midpoint of the two distributions. The decision boundary
+#           is razor-thin and sits well on the SPAM side of the midpoint; the model
+#           has no calibrated uncertainty (a consequence of training to loss < 5e-4
+#           on 100 perfectly separated samples).
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [65, 0.20, 2, 2, 1, 1, 0.12, 4.9] }
+  ]
+}
+
+
+### 7. CHALLENGE — extreme extrapolation (numerical-stability test)
+# Sample A: cartoonish mega-spam far beyond training: 5000 words, 100% caps,
+#           50 '!', 40 URLs, 20 money + 15 urgency keywords, 95% links. After
+#           z-score normalization these are huge z-values (e.g. caps ≈ +3.5σ,
+#           urls ≈ +25σ) — stress-tests attention/softmax far off the manifold.
+# Sample B: extreme legit: a 2000-word essay, zero everything, avgWordLen 9.
+# EXPECTED (verified): 200 OK with finite rawScores — no NaN, no 500 — and both
+#           classified correctly at saturation (A ≈ 0.9999 spam, B ≈ 0.0001
+#           not-spam), accuracy = 1.0. Attention + softmax stay numerically stable
+#           at +25σ inputs.
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [5000, 1.0, 50, 40, 20, 15, 0.95, 2.5], "label": 1 },
+    { "features": [2000, 0.0, 0, 0, 0, 0, 0.0, 9.0],      "label": 0 }
+  ]
+}
+
+
+### 8. CHALLENGE — decision-boundary sweep (monotonicity check, unlabeled)
+# Five samples linearly interpolated from a clear-legit anchor (row 1) to a
+# clear-spam anchor (row 5) in equal steps — a 1-D walk straight across the
+# decision boundary in feature space.
+# EXPECTED (verified): rawScore increases MONOTONICALLY down the list —
+#           ≈ 0.0002 → 0.0005 → 0.32 → 0.999 → 0.9998 — with the 0.5 crossing
+#           between rows 3 and 4. Row 3 (the exact midpoint, money/urgency = 2) is
+#           the ONLY point in the whole suite where the model produces a
+#           non-saturated score (≈ 0.32): the transition band is extremely narrow
+#           but the surface across it is smooth, not lumpy.
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [220, 0.03, 0, 0, 0, 0, 0.02, 6.5] },
+    { "features": [175, 0.16, 2, 1, 1, 1, 0.12, 5.8] },
+    { "features": [130, 0.29, 3, 2, 2, 2, 0.21, 5.1] },
+    { "features": [85,  0.42, 5, 3, 2, 2, 0.31, 4.3] },
+    { "features": [40,  0.55, 6, 4, 3, 3, 0.40, 3.6] }
+  ]
+}
+
+
+### 9. Realistic mixed inbox — 12-message batch (batched inference + accuracy)
+# Simulates one classification pass over an inbox:
+#   rows 1–4   easy spam   (lottery scam, pharma blast, crypto pump, fake invoice)
+#   rows 5–8   easy legit  (status update, meeting recap, long report, HR notice)
+#   rows 9–10  hard spam   (polished phishing — the test-3 pattern, two variants)
+#   rows 11–12 hard legit  (sale newsletter, short personal note — tests 4 & 5)
+# EXPECTED (verified): 200 OK; accuracy = 0.8333 (10/12). The two misses are
+#           rows 9–10 — the polished-phishing FALSE NEGATIVES (rawScore ≈ 0.029 and
+#           0.003), consistent with test 3. The hard-legit rows 11–12 are handled
+#           fine. inferenceMs ≈ single-sample latency (~10 ms), confirming the
+#           [12,8] batch runs as ONE tensor through the network rather than 12
+#           sequential calls.
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [25,  0.65, 8, 5, 4, 4, 0.48, 3.1], "label": 1 },
+    { "features": [42,  0.48, 6, 4, 3, 3, 0.38, 3.9], "label": 1 },
+    { "features": [55,  0.35, 4, 3, 2, 2, 0.25, 4.4], "label": 1 },
+    { "features": [70,  0.40, 5, 2, 3, 4, 0.22, 4.0], "label": 1 },
+    { "features": [180, 0.04, 0, 0, 0, 0, 0.01, 6.5], "label": 0 },
+    { "features": [95,  0.06, 1, 1, 0, 0, 0.04, 5.7], "label": 0 },
+    { "features": [280, 0.02, 0, 1, 0, 0, 0.02, 7.2], "label": 0 },
+    { "features": [120, 0.09, 1, 0, 0, 1, 0.00, 6.1], "label": 0 },
+    { "features": [110, 0.07, 1, 3, 3, 3, 0.08, 5.3], "label": 1 },
+    { "features": [140, 0.05, 0, 4, 2, 2, 0.10, 5.6], "label": 1 },
+    { "features": [90,  0.12, 2, 2, 1, 1, 0.07, 5.2], "label": 0 },
+    { "features": [6,   0.08, 1, 0, 0, 0, 0.00, 4.2], "label": 0 }
+  ]
+}
+
+
+### 10. Validation — wrong feature count
+# Only 3 of the required 8 features supplied.
+# EXPECTED: 400 Bad Request, body names the offending sample index ("Sample 0")
+#           and lists all 8 expected feature names. No inference is run.
 POST {{baseUrl}}/api/Classification/Predict
 Content-Type: application/json
 
 {
   "samples": [
     { "features": [22, 0.62, 7], "label": 1 }
+  ]
+}
+
+
+### 11. Validation — bad sample buried mid-batch (fail-fast, atomic rejection)
+# Sample 0 is valid; sample 1 has 9 features. The whole request must be rejected —
+# partial results for a half-valid batch would be worse than an error.
+# EXPECTED: 400 Bad Request naming "Sample 1" specifically; the valid sample 0 is
+#           NOT classified.
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "features": [22, 0.62, 7, 5, 4, 3, 0.45, 3.2], "label": 1 },
+    { "features": [210, 0.03, 0, 0, 0, 0, 0.01, 6.8, 99], "label": 0 }
+  ]
+}
+
+
+### 12. Validation — empty samples array
+# EXPECTED: 400 Bad Request — "Provide at least one sample to classify."
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": []
+}
+
+
+### 13. Validation — sample with null/missing features
+# The "features" property is absent entirely.
+# EXPECTED (verified): 400 Bad Request — but from MODEL BINDING, not the controller:
+#           an RFC 9110 ValidationProblemDetails body with
+#           errors["Samples[0].Features"] = "The Features field is required."
+#           (non-nullable record parameter ⇒ [ApiController] rejects before the
+#           action runs). Different error shape than tests 10–12.
+POST {{baseUrl}}/api/Classification/Predict
+Content-Type: application/json
+
+{
+  "samples": [
+    { "label": 1 }
   ]
 }
