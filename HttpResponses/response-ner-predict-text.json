@@ -1,0 +1,857 @@
+{
+    "results": [
+        {
+            "sentence": "Apple Inc announced the new iPhone in San Francisco",
+            "tokens": [
+                "Apple",
+                "Inc",
+                "announced",
+                "the",
+                "new",
+                "iPhone",
+                "in",
+                "San",
+                "Francisco"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "I-ORG",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "B-LOC",
+                "I-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Apple Inc",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 1
+                },
+                {
+                    "text": "San Francisco",
+                    "type": "LOC",
+                    "startToken": 7,
+                    "endToken": 8
+                }
+            ]
+        },
+        {
+            "sentence": "Elon Musk leads Tesla and SpaceX in California",
+            "tokens": [
+                "Elon",
+                "Musk",
+                "leads",
+                "Tesla",
+                "and",
+                "SpaceX",
+                "in",
+                "California"
+            ],
+            "bioLabels": [
+                "B-PER",
+                "I-PER",
+                "O",
+                "B-ORG",
+                "O",
+                "B-ORG",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Elon Musk",
+                    "type": "PER",
+                    "startToken": 0,
+                    "endToken": 1
+                },
+                {
+                    "text": "Tesla",
+                    "type": "ORG",
+                    "startToken": 3,
+                    "endToken": 3
+                },
+                {
+                    "text": "SpaceX",
+                    "type": "ORG",
+                    "startToken": 5,
+                    "endToken": 5
+                },
+                {
+                    "text": "California",
+                    "type": "LOC",
+                    "startToken": 7,
+                    "endToken": 7
+                }
+            ]
+        },
+        {
+            "sentence": "Google acquired YouTube for over a billion dollars",
+            "tokens": [
+                "Google",
+                "acquired",
+                "YouTube",
+                "for",
+                "over",
+                "a",
+                "billion",
+                "dollars"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "O",
+                "B-MISC",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "Google",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "YouTube",
+                    "type": "MISC",
+                    "startToken": 2,
+                    "endToken": 2
+                }
+            ]
+        },
+        {
+            "sentence": "Paris and London are popular European destinations",
+            "tokens": [
+                "Paris",
+                "and",
+                "London",
+                "are",
+                "popular",
+                "European",
+                "destinations"
+            ],
+            "bioLabels": [
+                "B-LOC",
+                "O",
+                "B-LOC",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "Paris",
+                    "type": "LOC",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "London",
+                    "type": "LOC",
+                    "startToken": 2,
+                    "endToken": 2
+                }
+            ]
+        },
+        {
+            "sentence": "Barack Obama served as 44th President",
+            "tokens": [
+                "Barack",
+                "Obama",
+                "served",
+                "as",
+                "44th",
+                "President"
+            ],
+            "bioLabels": [
+                "B-PER",
+                "I-PER",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "Barack Obama",
+                    "type": "PER",
+                    "startToken": 0,
+                    "endToken": 1
+                }
+            ]
+        },
+        {
+            "sentence": "Tesla acquired SpaceX in London",
+            "tokens": [
+                "Tesla",
+                "acquired",
+                "SpaceX",
+                "in",
+                "London"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "O",
+                "B-ORG",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Tesla",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "SpaceX",
+                    "type": "ORG",
+                    "startToken": 2,
+                    "endToken": 2
+                },
+                {
+                    "text": "London",
+                    "type": "LOC",
+                    "startToken": 4,
+                    "endToken": 4
+                }
+            ]
+        },
+        {
+            "sentence": "Barack Obama announced the new iPhone in Paris",
+            "tokens": [
+                "Barack",
+                "Obama",
+                "announced",
+                "the",
+                "new",
+                "iPhone",
+                "in",
+                "Paris"
+            ],
+            "bioLabels": [
+                "B-PER",
+                "I-PER",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Barack Obama",
+                    "type": "PER",
+                    "startToken": 0,
+                    "endToken": 1
+                },
+                {
+                    "text": "Paris",
+                    "type": "LOC",
+                    "startToken": 7,
+                    "endToken": 7
+                }
+            ]
+        },
+        {
+            "sentence": "Google and Apple Inc are popular in California",
+            "tokens": [
+                "Google",
+                "and",
+                "Apple",
+                "Inc",
+                "are",
+                "popular",
+                "in",
+                "California"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "O",
+                "B-ORG",
+                "I-ORG",
+                "O",
+                "O",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Google",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "Apple Inc",
+                    "type": "ORG",
+                    "startToken": 2,
+                    "endToken": 3
+                },
+                {
+                    "text": "California",
+                    "type": "LOC",
+                    "startToken": 7,
+                    "endToken": 7
+                }
+            ]
+        },
+        {
+            "sentence": "Microsoft was founded by Bill Gates in Seattle",
+            "tokens": [
+                "Microsoft",
+                "was",
+                "founded",
+                "by",
+                "Bill",
+                "Gates",
+                "in",
+                "Seattle"
+            ],
+            "bioLabels": [
+                "O",
+                "O",
+                "B-PER",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "founded",
+                    "type": "PER",
+                    "startToken": 2,
+                    "endToken": 2
+                }
+            ]
+        },
+        {
+            "sentence": "i ate an apple while walking in paris with elon",
+            "tokens": [
+                "i",
+                "ate",
+                "an",
+                "apple",
+                "while",
+                "walking",
+                "in",
+                "paris",
+                "with",
+                "elon"
+            ],
+            "bioLabels": [
+                "O",
+                "O",
+                "O",
+                "B-ORG",
+                "O",
+                "B-ORG",
+                "O",
+                "B-LOC",
+                "O",
+                "B-PER"
+            ],
+            "entities": [
+                {
+                    "text": "apple",
+                    "type": "ORG",
+                    "startToken": 3,
+                    "endToken": 3
+                },
+                {
+                    "text": "walking",
+                    "type": "ORG",
+                    "startToken": 5,
+                    "endToken": 5
+                },
+                {
+                    "text": "paris",
+                    "type": "LOC",
+                    "startToken": 7,
+                    "endToken": 7
+                },
+                {
+                    "text": "elon",
+                    "type": "PER",
+                    "startToken": 9,
+                    "endToken": 9
+                }
+            ]
+        },
+        {
+            "sentence": "Visit Paris, London and Tesla.",
+            "tokens": [
+                "Visit",
+                "Paris,",
+                "London",
+                "and",
+                "Tesla."
+            ],
+            "bioLabels": [
+                "O",
+                "O",
+                "B-LOC",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "London",
+                    "type": "LOC",
+                    "startToken": 2,
+                    "endToken": 2
+                }
+            ]
+        },
+        {
+            "sentence": "Tesla plans to build a large new battery factory somewhere on the west coast near beautiful San Francisco",
+            "tokens": [
+                "Tesla",
+                "plans",
+                "to",
+                "build",
+                "a",
+                "large",
+                "new",
+                "battery",
+                "factory",
+                "somewhere",
+                "on",
+                "the",
+                "west",
+                "coast",
+                "near",
+                "beautiful",
+                "San",
+                "Francisco"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "O",
+                "O",
+                "O",
+                "O",
+                "B-ORG",
+                "O",
+                "O",
+                "O",
+                "O",
+                "B-LOC",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "Tesla",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "large",
+                    "type": "ORG",
+                    "startToken": 5,
+                    "endToken": 5
+                },
+                {
+                    "text": "on",
+                    "type": "LOC",
+                    "startToken": 10,
+                    "endToken": 10
+                }
+            ]
+        },
+        {
+            "sentence": "Musk and Obama met in Francisco",
+            "tokens": [
+                "Musk",
+                "and",
+                "Obama",
+                "met",
+                "in",
+                "Francisco"
+            ],
+            "bioLabels": [
+                "I-PER",
+                "O",
+                "I-PER",
+                "O",
+                "O",
+                "I-LOC"
+            ],
+            "entities": []
+        },
+        {
+            "sentence": "Elon Musk leads Tesla and SpaceX in California",
+            "tokens": [
+                "Elon",
+                "Musk",
+                "leads",
+                "Tesla",
+                "and",
+                "SpaceX",
+                "in",
+                "California"
+            ],
+            "bioLabels": [
+                "B-PER",
+                "I-PER",
+                "O",
+                "B-ORG",
+                "O",
+                "B-ORG",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Elon Musk",
+                    "type": "PER",
+                    "startToken": 0,
+                    "endToken": 1
+                },
+                {
+                    "text": "Tesla",
+                    "type": "ORG",
+                    "startToken": 3,
+                    "endToken": 3
+                },
+                {
+                    "text": "SpaceX",
+                    "type": "ORG",
+                    "startToken": 5,
+                    "endToken": 5
+                },
+                {
+                    "text": "California",
+                    "type": "LOC",
+                    "startToken": 7,
+                    "endToken": 7
+                }
+            ]
+        },
+        {
+            "sentence": "Paris and London are popular European destinations",
+            "tokens": [
+                "Paris",
+                "and",
+                "London",
+                "are",
+                "popular",
+                "European",
+                "destinations"
+            ],
+            "bioLabels": [
+                "B-LOC",
+                "O",
+                "B-LOC",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "Paris",
+                    "type": "LOC",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "London",
+                    "type": "LOC",
+                    "startToken": 2,
+                    "endToken": 2
+                }
+            ]
+        },
+        {
+            "sentence": "Apple Inc acquired YouTube in London",
+            "tokens": [
+                "Apple",
+                "Inc",
+                "acquired",
+                "YouTube",
+                "in",
+                "London"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "I-ORG",
+                "O",
+                "B-MISC",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Apple Inc",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 1
+                },
+                {
+                    "text": "YouTube",
+                    "type": "MISC",
+                    "startToken": 3,
+                    "endToken": 3
+                },
+                {
+                    "text": "London",
+                    "type": "LOC",
+                    "startToken": 5,
+                    "endToken": 5
+                }
+            ]
+        },
+        {
+            "sentence": "Barack Obama leads Google in Paris",
+            "tokens": [
+                "Barack",
+                "Obama",
+                "leads",
+                "Google",
+                "in",
+                "Paris"
+            ],
+            "bioLabels": [
+                "B-PER",
+                "I-PER",
+                "O",
+                "B-ORG",
+                "O",
+                "B-LOC"
+            ],
+            "entities": [
+                {
+                    "text": "Barack Obama",
+                    "type": "PER",
+                    "startToken": 0,
+                    "endToken": 1
+                },
+                {
+                    "text": "Google",
+                    "type": "ORG",
+                    "startToken": 3,
+                    "endToken": 3
+                },
+                {
+                    "text": "Paris",
+                    "type": "LOC",
+                    "startToken": 5,
+                    "endToken": 5
+                }
+            ]
+        },
+        {
+            "sentence": "Amazon opened new offices in Toronto last quarter",
+            "tokens": [
+                "Amazon",
+                "opened",
+                "new",
+                "offices",
+                "in",
+                "Toronto",
+                "last",
+                "quarter"
+            ],
+            "bioLabels": [
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O",
+                "O"
+            ],
+            "entities": []
+        },
+        {
+            "sentence": "Taylor Swift performed at Wembley Stadium on Friday",
+            "tokens": [
+                "Taylor",
+                "Swift",
+                "performed",
+                "at",
+                "Wembley",
+                "Stadium",
+                "on",
+                "Friday"
+            ],
+            "bioLabels": [
+                "O",
+                "O",
+                "O",
+                "I-ORG",
+                "B-ORG",
+                "B-ORG",
+                "B-LOC",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "Wembley",
+                    "type": "ORG",
+                    "startToken": 4,
+                    "endToken": 4
+                },
+                {
+                    "text": "Stadium",
+                    "type": "ORG",
+                    "startToken": 5,
+                    "endToken": 5
+                },
+                {
+                    "text": "on",
+                    "type": "LOC",
+                    "startToken": 6,
+                    "endToken": 6
+                }
+            ]
+        },
+        {
+            "sentence": "my friend elon moved to paris last spring",
+            "tokens": [
+                "my",
+                "friend",
+                "elon",
+                "moved",
+                "to",
+                "paris",
+                "last",
+                "spring"
+            ],
+            "bioLabels": [
+                "B-ORG",
+                "O",
+                "B-PER",
+                "O",
+                "B-LOC",
+                "B-LOC",
+                "O",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "my",
+                    "type": "ORG",
+                    "startToken": 0,
+                    "endToken": 0
+                },
+                {
+                    "text": "elon",
+                    "type": "PER",
+                    "startToken": 2,
+                    "endToken": 2
+                },
+                {
+                    "text": "to",
+                    "type": "LOC",
+                    "startToken": 4,
+                    "endToken": 4
+                },
+                {
+                    "text": "paris",
+                    "type": "LOC",
+                    "startToken": 5,
+                    "endToken": 5
+                }
+            ]
+        },
+        {
+            "sentence": "Tesla, SpaceX and Google, all grew this year",
+            "tokens": [
+                "Tesla,",
+                "SpaceX",
+                "and",
+                "Google,",
+                "all",
+                "grew",
+                "this",
+                "year"
+            ],
+            "bioLabels": [
+                "O",
+                "B-ORG",
+                "O",
+                "O",
+                "B-LOC",
+                "O",
+                "B-ORG",
+                "O"
+            ],
+            "entities": [
+                {
+                    "text": "SpaceX",
+                    "type": "ORG",
+                    "startToken": 1,
+                    "endToken": 1
+                },
+                {
+                    "text": "all",
+                    "type": "LOC",
+                    "startToken": 4,
+                    "endToken": 4
+                },
+                {
+                    "text": "this",
+                    "type": "ORG",
+                    "startToken": 6,
+                    "endToken": 6
+                }
+            ]
+        }
+    ],
+    "modelInfo": {
+        "modelType": "TransformerTokenClassifier",
+        "embeddingDim": 50,
+        "modelDim": 64,
+        "numHeads": 4,
+        "numLayers": 2,
+        "numLabels": 9,
+        "maxSeqLen": 15,
+        "trainingSentences": 5,
+        "trainEpochs": 58,
+        "parameterCount": 103433,
+        "finalTrainLoss": 0.009972,
+        "labelSet": [
+            "O",
+            "B-PER",
+            "I-PER",
+            "B-ORG",
+            "I-ORG",
+            "B-LOC",
+            "I-LOC",
+            "B-MISC",
+            "I-MISC"
+        ]
+    },
+    "facadePattern": "INerFacade → TransformerNerFacade (singleton, trained once) | new NeuralNetwork<double>(NeuralNetworkArchitecture(custom layers: Dense(50→64) → 2× TransformerEncoder(4 heads, ff 256) → Dense(9, softmax))) → SetTrainingMode(true) → Train(x[5,15,50], y[5,15,9] one-hot per token) until loss ≤ 0.01 (max 200 epochs, CategoricalCrossEntropyLoss) → SetTrainingMode(false) → Predict(Tensor[M,15,50]) → per-token softmax [M,15,9] → argmax → BIO spans",
+    "interfaceChain": "NeuralNetwork<T> → NeuralNetworkBase<T> → INeuralNetworkModel<T>, IFullModel<T,Tensor<T>,Tensor<T>>",
+    "timings": {
+        "totalMs": 51.078,
+        "trainMs": 4892.064,
+        "inferenceMs": 51.058
+    },
+    "system": {
+        "os": "Microsoft Windows 10.0.26200",
+        "framework": ".NET 10.0.9",
+        "libraryVersion": "0.204.0+51de880345364ddbd94eb74c62793c6deb29182b"
+    }
+}
