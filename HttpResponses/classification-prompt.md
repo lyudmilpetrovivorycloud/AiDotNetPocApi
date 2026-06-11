@@ -24,3 +24,5 @@ Provide a clear pass/fail conclusion.
 List any gaps, inconsistencies, or incorrect behaviors.
 Reference specific examples from the JSON response and code.
 Suggest specific improvements or fixes if requirements are not fully met.
+
+fill in your findings into file HttpResponses\classification-summary.md
