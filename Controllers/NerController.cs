@@ -33,6 +33,18 @@ public sealed record NerAnalysisResult(
     long ParameterCount,
     string FacadePattern,
     string InterfaceChain);
+    
+// A neural network is a computer system loosely inspired by how the brain works.
+// It's made of many small units called "neurons," organized in layers,
+// where each connection between neurons has a weight
+// (a number that says how strongly one neuron influences the next).
+// You feed data in at one end — say, the 8 features of an email — and it passes through these layers,
+// with each neuron combining its inputs, applying a simple math function,
+// and passing the result forward until an answer comes out the other end
+// (like "spam" or "not spam").
+// The network "learns" by being shown many labeled examples
+// and gradually adjusting all those weights so its answers get closer to the correct ones.
+// After enough training, it can recognize patterns in new data it has never seen before.
 
 // ─── Facade implementation ────────────────────────────────────────────────────
 // Owns the AiDotNet model lifecycle. Registered as a SINGLETON: the model is
