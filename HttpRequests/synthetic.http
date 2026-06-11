@@ -1,6 +1,55 @@
 @baseUrl = https://localhost:60711
 
-### Generate — small batch (5 samples)
+# ══════════════════════════════════════════════════════════════════════════════
+# Synthetic data test suite — SMOTENCGenerator behind /api/Synthetic/Generate
+#
+# Generator facts that shape these tests (see SyntheticController.cs):
+#   • SMOTE-NC fitted ONCE per process (Seed=42, K=5) on 50 hardcoded customer
+#     rows: Age, Income, Education (categorical 0–3), CreditScore.
+#   • SMOTE interpolates between a seed row and one of its K nearest neighbors —
+#     it can only generate INSIDE the convex hull of the seed data. No value can
+#     ever fall outside the seed min/max. Strength: no garbage rows (unlike the
+#     CTGAN attempt, which produced negative incomes). Weakness: zero novelty —
+#     every synthetic row is a blend of two real rows (a privacy consideration).
+#   • Education is interpolated NC-style: the categorical column snaps to a real
+#     category index, so values must be EXACTLY 0/1/2/3 — never 1.0000003.
+#   • The seed data is strongly correlated by construction
+#     (Age~Income ≈ 0.99, Age~CreditScore ≈ 0.95, Income~CreditScore ≈ 0.97) —
+#     correlation preservation is the headline fidelity metric in the response.
+#   • Request contract: numSamples is OPTIONAL (default 20) and silently CLAMPED
+#     to [1, 200] — out-of-range values are corrected, not rejected. The only
+#     400s come from model binding (wrong JSON type / empty body).
+#   • Seed bounds for reference: Age [21,60], Income [26000,130000],
+#     Education [0,3], CreditScore [550,820].
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+### 1. Smoke test — empty body, default sample count
+# The request record has numSamples as nullable; omitting it exercises the
+# documented default.
+# EXPECTED (verified): 200 OK with exactly 20 rows; modelInfo.generatedSamples
+#           = 20. trainMs ≈ 1.2 s on the FIRST call of the process — not the
+#           SMOTE fit itself (which has no training loop; the epochs argument is
+#           unused) but one-time assembly load + JIT riding on the lazy init.
+#           inferenceMs ≈ 9 ms; subsequent requests pay generation cost only.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+}
+
+
+### 2. Quick eyeball batch — 5 samples for manual row inspection
+# Small enough to read every row. Each row should LOOK like a plausible customer:
+# Age/Income/CreditScore jointly consistent (young → low income → low score,
+# senior → high income → high score), because each row is a blend of two real
+# neighbors that already obey that pattern.
+# EXPECTED (verified): 5 rows, each with Age in [21,60], Income in
+#           [26000,130000], Education exactly one of 0/1/2/3, CreditScore in
+#           [550,820], and no implausible combination (e.g. Age 22 with Income
+#           120000 cannot occur — the seed data contains no such neighbors to
+#           blend). Sample row from a real run: [54.31, 118904.30, 3, 800.33] —
+#           a plausible senior PhD profile.
 POST {{baseUrl}}/api/Synthetic/Generate
 Content-Type: application/json
 
@@ -8,26 +57,136 @@ Content-Type: application/json
   "numSamples": 5
 }
 
-### Generate — standard POC run (15 samples)
-POST {{baseUrl}}/api/Synthetic/Generate
-Content-Type: application/json
 
-{
-  "numSamples": 15
-}
-
-### Generate — larger batch for stat comparison (50 samples)
-POST {{baseUrl}}/api/Synthetic/Generate
-Content-Type: application/json
-
-{
-  "numSamples": 50
-}
-
-### Generate — max allowed (200 samples)
+### 3. CHALLENGE — statistical fidelity audit at max scale (200 samples)
+# 200 synthetic rows from 50 seeds (4× oversampling) — the realistic "augment my
+# training set" use case. With n=200 the sampling noise is small enough for the
+# response's realStats/syntheticStats/correlations to be a meaningful audit.
+# EXPECTED (verified, n=200): synthetic mean/std within ~1% of real —
+#           Age 38.4 vs 38.2 (std 10.85 vs 11.06), Income 73.3k vs 72.5k
+#           (std 31.1k vs 31.7k), CreditScore 709 vs 707 (std 82.3 vs 82.1).
+#           Age/Income std land slightly BELOW real — interpolation shrinks
+#           variance toward the cluster interior, the known SMOTE bias.
+#           ALL SIX pairwise correlations within 0.01 of real (e.g. Age~Income
+#           0.9884 vs 0.9893, Income~CreditScore 0.9712 vs 0.9681). This is the
+#           property that made SMOTENC win over CTGAN (diverged) and Copula
+#           (correlations degraded to 0.82–0.93) on this seed set.
 POST {{baseUrl}}/api/Synthetic/Generate
 Content-Type: application/json
 
 {
   "numSamples": 200
 }
+
+
+### 4. CHALLENGE — boundary + privacy audit (200 samples, different lens)
+# Same request as test 3 but verify three structural properties of the ROWS:
+#   a) CONVEX HULL: every value within seed min/max (Age [21,60], Income
+#      [26000,130000], CreditScore [550,820]) — SMOTE cannot extrapolate, so a
+#      single out-of-range value would be a library bug, not noise.
+#   b) CATEGORICAL INTEGRITY: every Education value is EXACTLY 0, 1, 2 or 3 —
+#      float noise here would mean the schema's categorical flag was ignored
+#      (the failure mode of the Copula generator).
+#   c) PRIVACY: count rows identical to a seed row. SMOTE's gap factor λ ∈ [0,1]
+#      can land on/near an endpoint, reproducing a real customer record exactly —
+#      worth measuring before calling synthetic data "anonymized".
+# EXPECTED (verified, 200 rows): (a) ZERO hull violations — every value inside
+#           the seed bounds; (b) ZERO non-integer Education values (distinct
+#           values exactly {0,1,2,3}); (c) ZERO exact seed-row duplicates — the
+#           gap factor λ stayed strictly inside (0,1) in this run. Do NOT read
+#           (c) as "privacy-safe": every synthetic row still lies on the line
+#           segment between two real customer records, so attribute disclosure
+#           via linkage remains possible even without exact copies.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+  "numSamples": 200
+}
+
+
+### 5. CHALLENGE — degenerate single sample (statistics edge case)
+# numSamples = 1: syntheticStats are computed over ONE row (std must be 0) and
+# Pearson correlation is undefined for n=1 (zero variance ⇒ denominator 0).
+# EXPECTED (verified): 200 OK, exactly 1 row. syntheticStats: min = max = mean
+#           (the row itself), std = 0 for all four columns. All six
+#           correlations[].synthetic = 0 — the implementation returns 0 when the
+#           denominator vanishes, so a reader must NOT interpret 0 here as
+#           "no correlation"; it means "undefined".
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+  "numSamples": 1
+}
+
+
+### 6. CHALLENGE — RNG advance across calls (send this request TWICE)
+# Seed=42 makes the generator deterministic per PROCESS, but Generate advances
+# the internal RNG state, and the singleton facade shares one generator across
+# requests.
+# EXPECTED (verified): two consecutive sends of this identical request return
+#           completely DIFFERENT rows (the second call continues the RNG stream —
+#           no caching, no reset). Restarting the API and replaying the same
+#           request sequence reproduces the same rows again (Seed=42).
+#           Determinism is per process-lifetime sequence, not per request.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+  "numSamples": 3
+}
+
+
+### 7. Clamping — zero and negative sample counts are corrected, not rejected
+# numSamples = -5 is invalid input, but the controller clamps to the [1,200]
+# floor instead of returning 400.
+# EXPECTED (verified): 200 OK with exactly 1 row, modelInfo.generatedSamples = 1.
+#           Note for API consumers: you cannot distinguish "I asked for 1" from
+#           "my invalid count was silently corrected" — a deliberate POC
+#           trade-off.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+  "numSamples": -5
+}
+
+
+### 8. Clamping — absurdly large request is capped at 200
+# numSamples = 100000 would be a 100k-row generation (and an easy DoS vector);
+# the controller caps at 200.
+# EXPECTED (verified): 200 OK with exactly 200 rows, modelInfo.generatedSamples
+#           = 200 — no error, no warning. The response itself (generatedSamples)
+#           is the only signal the cap was applied.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+  "numSamples": 100000
+}
+
+
+### 9. Validation — wrong JSON type for numSamples
+# "twenty" cannot bind to int?.
+# EXPECTED (verified): 400 Bad Request from MODEL BINDING — RFC 9110
+#           ValidationProblemDetails with errors["$.numSamples"] ("The JSON
+#           value could not be converted…") plus a generic errors["request"]
+#           entry. The action never runs. This and test 10 are the only ways
+#           this endpoint says 400.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
+
+{
+  "numSamples": "twenty"
+}
+
+
+### 10. Validation — completely empty request body
+# No JSON at all (Content-Length: 0). [ApiController] requires a body for
+# [FromBody] parameters.
+# EXPECTED (verified): 400 Bad Request — ValidationProblemDetails with
+#           "A non-empty request body is required." Contrast with test 1, where
+#           an empty OBJECT `{}` is valid and yields the default 20 rows.
+POST {{baseUrl}}/api/Synthetic/Generate
+Content-Type: application/json
