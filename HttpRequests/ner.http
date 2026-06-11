@@ -1,40 +1,256 @@
 @baseUrl = https://localhost:60711
 
-### Analyze — single sentence
-POST {{baseUrl}}/api/Ner/Analyze
-Content-Type: application/json
+# ══════════════════════════════════════════════════════════════════════════════
+# NER test suite — per-token transformer tagger behind /api/Ner/Analyze
+#
+# Model facts that shape these tests (see NerController.cs):
+#   • Trained on ONLY 5 hardcoded sentences (CoNLL-2003 BIO labels, 9 classes:
+#     O, B/I-PER, B/I-ORG, B/I-LOC, B/I-MISC).
+#   • Word embeddings are HASH-BASED, not semantic: each word is lowercased and
+#     hashed to a deterministic random 50-dim vector. Consequences:
+#       - unseen words = random vectors the model has never trained on;
+#       - "apple" (fruit) and "Apple" (company) are the SAME vector — the model
+#         is case-blind by construction;
+#       - "Paris," hashes differently from "Paris" — the space-only tokenizer
+#         makes punctuation glue create out-of-vocabulary tokens.
+#   • MaxSeqLen = 15: tokens 16+ are hard-coded to "O" without seeing the model.
+#   • Entity spans require a B- tag to open; orphan I- tags are dropped silently.
+#
+# Training vocabulary → label (everything else is out-of-vocabulary):
+#   Apple=B-ORG Inc=I-ORG Tesla=B-ORG SpaceX=B-ORG Google=B-ORG
+#   Elon=B-PER Musk=I-PER Barack=B-PER Obama=I-PER
+#   San=B-LOC Francisco=I-LOC California=B-LOC Paris=B-LOC London=B-LOC
+#   YouTube=B-MISC   (note: "European" was labeled O in training, not B-MISC)
+#
+# Reading the response: bioLabels = per-token argmax tags; entities = decoded
+# spans. First request per process also pays one-time training (trainMs ≈ 4 s,
+# ~65 epochs to loss ≤ 0.01, 103,433 parameters).
+#
+# REPRODUCIBILITY: embeddings come from string.GetHashCode(), which .NET
+# randomizes PER PROCESS. In-vocabulary results below are stable on every run
+# (train + inference share the process). The SPECIFIC tags that out-of-vocabulary
+# tokens receive are per-process noise — expect hallucinations of the same
+# character on each restart, not the same tags. OOV outcomes below are marked
+# "(this run)".
+# ══════════════════════════════════════════════════════════════════════════════
 
-{
-  "sentences": ["Microsoft was founded by Bill Gates in Seattle"]
-}
 
-### Analyze — two sentences
+### 1. Memorization baseline — the exact 5 training sentences
+# The model trains to loss ≤ 0.01 with 100% token accuracy on these, so this is
+# the "does the deployed model match its training report" check.
+# EXPECTED (verified): every sentence reproduces its training labels exactly —
+#   s1: Apple Inc=ORG span, San Francisco=LOC span
+#   s2: Elon Musk=PER, Tesla=ORG, SpaceX=ORG, California=LOC
+#   s3: Google=ORG, YouTube=MISC
+#   s4: Paris=LOC, London=LOC, and "European" stays O (it was trained as O —
+#       reproducing the training data's own quirk, not CoNLL convention)
+#   s5: Barack Obama=PER, nothing else
 POST {{baseUrl}}/api/Ner/Analyze
 Content-Type: application/json
 
 {
   "sentences": [
-    "Microsoft was founded by Bill Gates in Seattle",
-    "Elon Musk announced Tesla would open a factory in Berlin"
-  ]
-}
-
-### Analyze — only named entities expected
-POST {{baseUrl}}/api/Ner/Analyze
-Content-Type: application/json
-
-{
-  "sentences": [
-    "Barack Obama served as the 44th President of the United States",
+    "Apple Inc announced the new iPhone in San Francisco",
+    "Elon Musk leads Tesla and SpaceX in California",
     "Google acquired YouTube for over a billion dollars",
-    "Paris and London are popular European destinations"
+    "Paris and London are popular European destinations",
+    "Barack Obama served as 44th President"
   ]
 }
 
-### Validation — empty sentence list (expects 400)
+
+### 2. CHALLENGE — training vocabulary recombined into novel sentences
+# Every word here was seen in training, but in NEW positions and contexts:
+# "Tesla acquired SpaceX in London" never occurred; "Barack Obama announced the
+# new iPhone in Paris" splices person + product + location across sentences.
+# This separates word-identity memorization from genuine contextual tagging.
+# EXPECTED (verified): labels follow the WORD, not the context — every entity in
+#           all three sentences is tagged exactly as in training (Tesla/SpaceX=
+#           ORG, London/Paris=LOC, Barack Obama=PER, Apple Inc=ORG, …). The
+#           stack has no positional encoding, so per-token identity dominates.
+#           Correct-looking output here is memorization, not understanding.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Tesla acquired SpaceX in London",
+    "Barack Obama announced the new iPhone in Paris",
+    "Google and Apple Inc are popular in California"
+  ]
+}
+
+
+### 3. CHALLENGE — realistic news sentence, fully out-of-vocabulary entities
+# "Microsoft was founded by Bill Gates in Seattle" — perfectly ordinary NER
+# input, but Microsoft/founded/Bill/Gates/Seattle were never trained on, so each
+# is a random hash vector the model has never seen.
+# EXPECTED (verified): arbitrary output — and NOT the safe all-"O" fallback one
+#           might hope for. This run produced Microsoft=I-LOC, Bill=B-ORG (so
+#           the entity list contains the hallucination [Bill=ORG]) while Gates
+#           and Seattle fell to O. Every entity reported here is hash noise, not
+#           recognition, and the specific tags change on each server restart.
+#           The honest conclusion: a 5-sentence model does not generalize, and
+#           it fails by HALLUCINATING rather than by abstaining.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Microsoft was founded by Bill Gates in Seattle"
+  ]
+}
+
+
+### 4. CHALLENGE — case-blindness trap (lowercase common-noun usage)
+# "i ate an apple while walking in paris with elon" — a human (and any cased
+# NER model) reads "apple" as fruit. But embeddings are lowercased before
+# hashing, so apple/paris/elon are the IDENTICAL vectors to Apple/Paris/Elon
+# from training.
+# EXPECTED (verified): apple → B-ORG, paris → B-LOC, elon → B-PER — confident
+#           false positives on common-noun usage, proving the model cannot use
+#           casing, a signal real NER systems lean on heavily. All surrounding
+#           unseen words (i, ate, an, while, walking, with) came out "O".
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "i ate an apple while walking in paris with elon"
+  ]
+}
+
+
+### 5. CHALLENGE — punctuation glue (space-only tokenizer)
+# "Visit Paris, London and Tesla." — natural punctuation. The tokenizer splits
+# on spaces only, so the tokens are ["Visit","Paris,","London","and","Tesla."]:
+# "Paris," and "Tesla." hash differently from the trained "Paris"/"Tesla" and
+# are therefore out-of-vocabulary; bare "London" is in-vocabulary.
+# EXPECTED (verified): London → B-LOC found; "Paris," → O — one comma cost the
+#           model an entity it provably knows. "Tesla." (this run) happened to
+#           draw B-ORG from hash noise, so [Tesla.=ORG] was "found" — a lucky
+#           hallucination that LOOKS correct but is not recognition (the token is
+#           out-of-vocabulary; the tag can differ on the next restart). Beware
+#           reading OOV luck as competence.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Visit Paris, London and Tesla."
+  ]
+}
+
+
+### 6. CHALLENGE — MaxSeqLen truncation (entity beyond token 15)
+# 18 tokens: "Tesla" sits at position 0 (inside the model window) and
+# "San Francisco" at positions 16–17 (OUTSIDE MaxSeqLen=15, hard-coded to "O"
+# in DecodeBioLabels without ever reaching the network).
+# Tokens: Tesla(0) plans(1) to(2) build(3) a(4) large(5) new(6) battery(7)
+#         factory(8) somewhere(9) on(10) the(11) west(12) coast(13) near(14)
+#         beautiful(15) San(16) Francisco(17)
+# EXPECTED (verified): Tesla → B-ORG reported; San Francisco → silently "O",
+#           entity LOST to the truncation window (bioLabels still has 18 entries;
+#           the model just never saw the tail). Bonus finding (this run): the
+#           OOV filler INSIDE the window also hallucinated — build=B-MISC,
+#           large=B-ORG, battery=I-LOC — so the entity list contained
+#           [build=MISC] and [large=ORG] alongside the real [Tesla=ORG].
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Tesla plans to build a large new battery factory somewhere on the west coast near beautiful San Francisco"
+  ]
+}
+
+
+### 7. CHALLENGE — orphan I- tags (BIO decoder edge case)
+# "Musk and Obama met in Francisco" — Musk, Obama and Francisco were each seen
+# in training ONLY as I-tag continuations (I-PER, I-PER, I-LOC) following their
+# B- partners (Elon, Barack, San). Here they appear alone at span starts.
+# EXPECTED (verified): exactly as feared — bioLabels = Musk/I-PER and/O
+#           Obama/I-PER met/O in/O Francisco/I-LOC, and the entities list is
+#           COMPLETELY EMPTY. The tagger emits identity-driven orphan I- tags
+#           and ExtractEntitySpans drops every one of them rather than repairing
+#           the sequence (a real CoNLL decoder would patch I-X starts to B-X).
+#           Three known entities visible in bioLabels, zero reported.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Musk and Obama met in Francisco"
+  ]
+}
+
+
+### 8. Realistic mixed newsfeed — 8-sentence batch (memorized + recombined + OOV)
+# One inference pass over a realistic feed:
+#   s1–s2 exact training sentences (must be perfect)
+#   s3–s4 recombined training vocab (should follow word identity)
+#   s5–s6 fully out-of-vocabulary news (expect mostly O / noise)
+#   s7    lowercase trap, s8 punctuation trap
+# EXPECTED (verified): 200 OK; quality strictly stratified by vocab overlap:
+#           s1–s4 perfect (all entities correct, including the recombinations);
+#           s5–s6 OOV noise (this run: [Amazon=ORG] by luck plus hallucinated
+#           [opened=LOC]; Toronto drew an orphan I-LOC and was dropped; Taylor
+#           Swift missed entirely; [Wembley=ORG] wrong type);
+#           s7 lowercase trap confirmed ([elon=PER], [paris=LOC], plus stray
+#           spring=I-PER); s8 punctuation: "Tesla," and "Google," both lost to
+#           comma-glue while bare SpaceX=ORG survived, plus hallucinated
+#           [all=ORG] [grew=ORG].
+#           inferenceMs ≈ 7 ms — barely above a single sentence, confirming all
+#           8 sentences run as ONE [8,15,50] tensor through the network.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Elon Musk leads Tesla and SpaceX in California",
+    "Paris and London are popular European destinations",
+    "Apple Inc acquired YouTube in London",
+    "Barack Obama leads Google in Paris",
+    "Amazon opened new offices in Toronto last quarter",
+    "Taylor Swift performed at Wembley Stadium on Friday",
+    "my friend elon moved to paris last spring",
+    "Tesla, SpaceX and Google, all grew this year"
+  ]
+}
+
+
+### 9. Validation — empty sentence list
+# EXPECTED: 400 Bad Request — "Provide at least one sentence to analyze."
 POST {{baseUrl}}/api/Ner/Analyze
 Content-Type: application/json
 
 {
   "sentences": []
+}
+
+
+### 10. Validation — whitespace-only sentence buried mid-batch
+# Sentence 0 is valid; sentence 1 is only spaces. The whole request must be
+# rejected atomically — no partial results.
+# EXPECTED: 400 Bad Request naming "Sentence 1"; sentence 0 is NOT analyzed.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
+  "sentences": [
+    "Elon Musk leads Tesla and SpaceX in California",
+    "   "
+  ]
+}
+
+
+### 11. Validation — missing "sentences" property entirely
+# EXPECTED: 400 Bad Request from MODEL BINDING, not the controller: an RFC 9110
+#           ValidationProblemDetails body with errors["Sentences"] = required
+#           (non-nullable record parameter ⇒ [ApiController] rejects before the
+#           action runs). Different error shape than tests 9–10.
+POST {{baseUrl}}/api/Ner/Analyze
+Content-Type: application/json
+
+{
 }
